@@ -285,9 +285,7 @@ public class VpiRecordingService {
         if (req == null) {
             throw new InvalidRequestException("Request cannot be null");
         }
-        if (!StringUtils.hasText(req.getUsername())) {
-            throw new InvalidRequestException("username is required");
-        }
+        
         if (!StringUtils.hasText(req.getOpco())) {
             throw new InvalidRequestException("OPCO is required");
         }
@@ -665,4 +663,5 @@ public class VpiRecordingService {
 
         return map;
     }
+
 }
