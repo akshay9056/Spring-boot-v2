@@ -12,15 +12,11 @@ import com.avangrid.gui.avangrid_backend.infra.rge.repository.VpiRgeRepo;
 import com.avangrid.gui.avangrid_backend.model.*;
 import com.avangrid.gui.avangrid_backend.infra.azure.AzureBlobRepository;
 
-import net.bramp.ffmpeg.FFmpeg;
-import net.bramp.ffmpeg.FFprobe;
-import net.bramp.ffmpeg.builder.FFmpegBuilder;
-import net.bramp.ffmpeg.FFmpegExecutor;
+
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.data.domain.*;
 import org.springframework.data.jpa.domain.Specification;
@@ -31,19 +27,29 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StreamUtils;
 import org.springframework.util.StringUtils;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 
 import java.io.*;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Service for managing VPI (Voice Portal Interface) recordings.
@@ -72,21 +78,8 @@ public class VpiRecordingService {
     private static final int FILENAME_TIME_END = 24;
     private static final int FILENAME_CUSTOMER_START = 24;
 
-    // Audio conversion constants
-    private static final String AUDIO_CODEC = "libmp3lame";
-    private static final int AUDIO_BITRATE = 128000;
-    private static final int AUDIO_CHANNELS = 2;
-    private static final int AUDIO_SAMPLE_RATE = 44100;
-    private static final String TEMP_DIR_PREFIX = "audio_conversion_";
-    private static final String INPUT_FILE_PREFIX = "input_";
-    private static final String OUTPUT_FILE_PREFIX = "output_";
 
-    // Configurable paths
-    @Value("${ffmpeg.path:ffmpeg}")
-    private String ffmpegPath;
 
-    @Value("${ffprobe.path:ffprobe}")
-    private String ffprobePath;
 
     // Dependencies
     private final AzureBlobRepository vpiAzureRepository;
@@ -122,7 +115,10 @@ public class VpiRecordingService {
                     throw new InvalidRequestException("RGE datasource is disabled");
                 }
             }
+            default -> throw new InvalidRequestException("Invalid OPCO");
         }
+
+
     }
 
     /**
@@ -211,27 +207,50 @@ public class VpiRecordingService {
      * @throws RecordingProcessingException if ZIP creation fails
      */
     public ResponseEntity<byte[]> downloadVpi(List<RecordingRequest> requests) {
-        logger.info("Downloading {} recordings as ZIP", requests.size());
 
         if (requests.isEmpty()) {
             throw new InvalidRequestException("Request list cannot be empty");
         }
 
+        List<RecordingStatus> statuses = new ArrayList<>();
+        int successCount = 0;
+        int failureCount = 0;
+
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
              ZipOutputStream zos = new ZipOutputStream(baos)) {
 
             for (RecordingRequest req : requests) {
-                addRecordingToZip(req, zos);
+                RecordingStatus status = addRecordingToZip(req, zos);
+                statuses.add(status);
+
+                if ("SUCCESS".equals(status.getStatus())) {
+                    successCount++;
+                }
+                else{
+                    failureCount++;
+                }
             }
+
+            if (successCount == 0) {
+                return ResponseEntity.noContent().build();
+            }
+
+            ZipStatusSummary summary = new ZipStatusSummary(
+                    requests.size(),
+                    successCount,
+                    failureCount,
+                    statuses
+            );
+            addStatusFileToZip(summary, zos);
 
             zos.finish();
             return buildZipResponse(baos.toByteArray());
 
         } catch (IOException e) {
-            logger.error("Error creating ZIP file", e);
-            throw new RecordingProcessingException("Failed to create ZIP file: " + e.getMessage(), e);
+            throw new RecordingProcessingException("Failed to create ZIP", e);
         }
     }
+
 
     /**
      * Searches for recordings based on criteria.
@@ -285,7 +304,7 @@ public class VpiRecordingService {
         if (req == null) {
             throw new InvalidRequestException("Request cannot be null");
         }
-        
+
         if (!StringUtils.hasText(req.getOpco())) {
             throw new InvalidRequestException("OPCO is required");
         }
@@ -454,56 +473,105 @@ public class VpiRecordingService {
         }
     }
 
-    private byte[] convertWavToMp3(byte[] wavData) {
-        Path tempDir = null;
-        Path inputFile = null;
-        Path outputFile = null;
-
-        try {
-            tempDir = Files.createTempDirectory(TEMP_DIR_PREFIX);
-            String uniqueId = UUID.randomUUID().toString();
-            inputFile = tempDir.resolve(INPUT_FILE_PREFIX + uniqueId + WAV_EXTENSION);
-            outputFile = tempDir.resolve(OUTPUT_FILE_PREFIX + uniqueId + MP3_EXTENSION);
-
-            Files.write(inputFile, wavData);
-
-            FFmpeg ffmpeg = new FFmpeg(ffmpegPath);
-            FFprobe ffprobe = new FFprobe(ffprobePath);
-
-            FFmpegBuilder builder = new FFmpegBuilder()
-                    .setInput(inputFile.toString())
-                    .overrideOutputFiles(true)
-                    .addOutput(outputFile.toString())
-                    .setAudioCodec(AUDIO_CODEC)
-                    .setAudioBitRate(AUDIO_BITRATE)
-                    .setAudioChannels(AUDIO_CHANNELS)
-                    .setAudioSampleRate(AUDIO_SAMPLE_RATE)
-                    .done();
-
-            FFmpegExecutor executor = new FFmpegExecutor(ffmpeg, ffprobe);
-            executor.createJob(builder).run();
-
-            return Files.readAllBytes(outputFile);
-
-        } catch (IOException e) {
-            logger.error("IO error during WAV to MP3 conversion", e);
-            throw new RecordingProcessingException("Failed to convert audio file: " + e.getMessage(), e);
-        } catch (Exception e) {
-            logger.error("Unexpected error during WAV to MP3 conversion", e);
-            throw new RecordingProcessingException("Audio conversion failed: " + e.getMessage(),e);
-        } finally {
-            cleanupTempFiles(inputFile, outputFile, tempDir);
+    public byte[] convertWavToMp3(byte[] wavData) {
+        if (wavData == null || wavData.length == 0) {
+            throw new InvalidRequestException("WAV data is empty");
         }
-    }
 
-    private void cleanupTempFiles(Path... paths) {
-        for (Path path : paths) {
-            if (path != null) {
-                try {
-                    Files.deleteIfExists(path);
+        ProcessBuilder pb = new ProcessBuilder(
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel", "warning",  // Capture warnings
+                "-i", "pipe:0",
+                "-vn",
+                "-acodec", "libmp3lame",
+                "-ab", "128k",
+                "-ac", "2",
+                "-ar", "44100",
+                "-f", "mp3",
+                "pipe:1"
+        );
+
+        Process process = null;
+        try {
+            process = pb.start();
+            final Process proc = process;
+
+            // Handle stderr (error/warning messages)
+            CompletableFuture<String> errorReader = CompletableFuture.supplyAsync(() -> {
+                try (InputStream stderr = proc.getErrorStream();
+                     BufferedReader reader = new BufferedReader(new InputStreamReader(stderr))) {
+                    return reader.lines().collect(Collectors.joining("\n"));
                 } catch (IOException e) {
-                    logger.warn("Failed to delete temporary file: {}", path, e);
+                    return "Failed to read error stream: " + e.getMessage();
                 }
+            });
+
+            // Write stdin
+            CompletableFuture<Void> writer = CompletableFuture.runAsync(() -> {
+                try (OutputStream stdin = proc.getOutputStream()) {
+                    stdin.write(wavData);
+                    stdin.flush();
+                } catch (IOException e) {
+                    throw new UncheckedIOException("Write failed", e);
+                }
+            });
+
+            // Read stdout
+            CompletableFuture<byte[]> reader = CompletableFuture.supplyAsync(() -> {
+                try (InputStream stdout = proc.getInputStream();
+                     ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+
+                    byte[] buffer = new byte[8192];
+                    int bytesRead;
+                    while ((bytesRead = stdout.read(buffer)) != -1) {
+                        output.write(buffer, 0, bytesRead);
+                    }
+                    return output.toByteArray();
+
+                } catch (IOException e) {
+                    throw new UncheckedIOException("Read failed", e);
+                }
+            });
+
+            // Wait for all tasks
+            CompletableFuture.allOf(writer, reader, errorReader)
+                    .get(60, TimeUnit.SECONDS);
+
+            byte[] mp3Data = reader.get();
+            String errors = errorReader.get();
+
+            int exitCode = process.waitFor();
+
+            if (exitCode != 0) {
+                logger.error("FFmpeg conversion failed. Exit code: {}, Errors: {}", exitCode, errors);
+                throw new RecordingProcessingException(
+                        String.format("FFmpeg failed (exit %d): %s", exitCode, errors));
+            }
+
+            if (!errors.isEmpty()) {
+                logger.warn("FFmpeg warnings: {}", errors);
+            }
+
+            logger.info("Conversion successful: {} bytes WAV -> {} bytes MP3",
+                    wavData.length, mp3Data.length);
+
+            return mp3Data;
+
+        } catch (TimeoutException e) {
+            process.destroyForcibly();
+            throw new RecordingProcessingException("Conversion timed out after 60 seconds", e);
+        } catch (ExecutionException e) {
+            throw new RecordingProcessingException("Conversion failed", e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+            throw new RecordingProcessingException("Conversion interrupted", e);
+        } catch (IOException e) {
+            throw new RecordingProcessingException("Failed to start FFmpeg process", e);
+        } finally {
+            if (process != null && process.isAlive()) {
+                process.destroyForcibly();
             }
         }
     }
@@ -523,7 +591,11 @@ public class VpiRecordingService {
                 .body(resource);
     }
 
-    private void addRecordingToZip(RecordingRequest req, ZipOutputStream zos) throws IOException {
+    private RecordingStatus addRecordingToZip(
+            RecordingRequest req,
+            ZipOutputStream zos
+    ) throws IOException {
+
         validateRequest(req);
 
         LocalDateTime fileDate = parseDateTime(req.getDate());
@@ -531,24 +603,64 @@ public class VpiRecordingService {
         String normalizedCustomer = normalize(req.getUsername());
 
         String blobName = findMatchingBlob(prefix, fileDate, normalizedCustomer);
-
-        if (!blobName.endsWith(WAV_EXTENSION)) {
-            logger.warn("Skipping non-WAV file: {}", blobName);
-            return;
+        if (blobName.isEmpty()) {
+            logger.warn("No matching blob found for user={} date={}", req.getUsername(), req.getDate());
+            return new RecordingStatus(
+                    req.getUsername(),
+                    req.getDate(),
+                    null,
+                    "NOT_FOUND",
+                    "No matching audio file found"
+            );
         }
 
-        String zipEntryName = Paths.get(req.getUsername() + WAV_EXTENSION).getFileName().toString();
+        // 🔹 filename: date + username
+        String formattedDate = fileDate.toLocalDate().toString(); // yyyy-MM-dd
+        String zipEntryName = formattedDate + "_" + req.getUsername() + WAV_EXTENSION;
+
         zos.putNextEntry(new ZipEntry(zipEntryName));
 
         try (InputStream blobStream = vpiAzureRepository.getBlobStream(blobName)) {
             StreamUtils.copy(blobStream, zos);
         } catch (Exception e) {
             logger.error("Failed to add recording to ZIP: {}", blobName, e);
-            throw new IOException("Failed to add recording: " + blobName, e);
+            return new RecordingStatus(
+                    req.getUsername(),
+                    req.getDate(),
+                    zipEntryName,
+                    "ERROR",
+                    e.getMessage()
+            );
+        } finally {
+            zos.closeEntry();
         }
 
+        return new RecordingStatus(
+                req.getUsername(),
+                req.getDate(),
+                zipEntryName,
+                "SUCCESS",
+                null
+        );
+    }
+
+    private void addStatusFileToZip(
+            ZipStatusSummary summary,
+            ZipOutputStream zos
+    ) throws IOException {
+
+        ZipEntry entry = new ZipEntry("status.json");
+        zos.putNextEntry(entry);
+
+        ObjectMapper mapper = new ObjectMapper();
+        String json = mapper
+                .writerWithDefaultPrettyPrinter()
+                .writeValueAsString(summary);
+
+        zos.write(json.getBytes(StandardCharsets.UTF_8));
         zos.closeEntry();
     }
+
 
     private ResponseEntity<byte[]> buildZipResponse(byte[] zipData) {
         HttpHeaders headers = new HttpHeaders();
@@ -564,28 +676,28 @@ public class VpiRecordingService {
     private Page<VpiMetadata> searchCmp(
             LocalDateTime from, LocalDateTime to, VpiFiltersRequest filters, Pageable pageable) {
         Specification<VpiCaptureCmp> spec = CaptureSpecifications.build(from, to, filters);
-        return mapToMetadata(cmpRepo.findAll(spec, pageable));
+        return mapToMetadata(cmpRepo.findAll(spec, pageable),"CMP");
     }
 
     private Page<VpiMetadata> searchNyseg(
             LocalDateTime from, LocalDateTime to, VpiFiltersRequest filters, Pageable pageable) {
         Specification<VpiCaptureNyseg> spec = CaptureSpecifications.build(from, to, filters);
-        return mapToMetadata(nysegRepo.findAll(spec, pageable));
+        return mapToMetadata(nysegRepo.findAll(spec, pageable),"NYSEG");
     }
 
     private Page<VpiMetadata> searchRge(
             LocalDateTime from, LocalDateTime to, VpiFiltersRequest filters, Pageable pageable) {
         Specification<VpiCaptureRge> spec = CaptureSpecifications.build(from, to, filters);
-        return mapToMetadata(rgeRepo.findAll(spec, pageable));
+        return mapToMetadata(rgeRepo.findAll(spec, pageable),"RGE");
     }
 
     // ========== Mapping Methods ==========
 
-    private Page<VpiMetadata> mapToMetadata(Page<? extends VpiCaptureView> page) {
-        return page.map(this::convertToMetadata);
+    private Page<VpiMetadata> mapToMetadata(Page<? extends VpiCaptureView> page,String opco) {
+        return page.map(rec -> convertToMetadata(rec, opco));
     }
 
-    private VpiMetadata convertToMetadata(VpiCaptureView rec) {
+    private VpiMetadata convertToMetadata(VpiCaptureView rec, String opco) {
         VpiMetadata dto = new VpiMetadata();
         dto.setObjectId(rec.getObjectId());
         dto.setDateAdded(rec.getDateAdded());
@@ -597,6 +709,7 @@ public class VpiRecordingService {
         dto.setUserId(rec.getUserId());
         dto.setUserName(rec.getUserName());
         dto.setDirection(rec.getDirection());
+        dto.setOpco(opco);
         return dto;
     }
 
@@ -663,5 +776,4 @@ public class VpiRecordingService {
 
         return map;
     }
-
 }

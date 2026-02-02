@@ -20,5 +20,6 @@ public class VpiMetadata {
     private String aniAlidigts;
     private String extensionNum;
     private String direction;
+    private String opco;
 }
 
