@@ -92,11 +92,7 @@
             <groupId>com.fasterxml.jackson.dataformat</groupId>
             <artifactId>jackson-dataformat-xml</artifactId>
         </dependency>
-        <dependency>
-            <groupId>net.bramp.ffmpeg</groupId>
-            <artifactId>ffmpeg</artifactId>
-            <version>${bramp.ffmpeg.version}</version>
-        </dependency>
+
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
