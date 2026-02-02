@@ -23,16 +23,16 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(
                                 "/actuator/**",
-                                "/swagger-ui/**","/api/v1/recording","/api/v1/search",
-                                "/v3/api-docs/**",
-                                "/api/v1/download"
+                                "/swagger-ui/**",
+                                "/v3/api-docs/**"
 
 
                         ).permitAll()
                         .requestMatchers(
 
-
-
+                                 "/api/v1/recording",
+                                "/api/v1/search",
+                                "/api/v1/download",
                                 "/api/v1/metadata"
                         ).authenticated()
                         .anyRequest().denyAll()
@@ -70,3 +70,4 @@ public class SecurityConfig {
         return decoder;
     }
 }
+
