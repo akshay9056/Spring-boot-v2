@@ -2,16 +2,15 @@ package com.avangrid.gui.avangrid_backend.model;
 
 
 import lombok.Data;
-import java.time.OffsetDateTime;
 import java.util.UUID;
 
 @Data
 public class VpiMetadata {
 
     private UUID objectId;
-    private OffsetDateTime dateAdded;
+    private String dateAdded;
     private UUID userId;
-    private OffsetDateTime startTime;
+    private String startTime;
     private Integer duration;
     private String tags;
     private String channelName;
@@ -23,4 +22,5 @@ public class VpiMetadata {
     private String agentId;
     private String opco;
 }
+
 
