@@ -35,10 +35,7 @@ import org.springframework.util.StringUtils;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
+import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -392,6 +389,16 @@ public class VpiRecordingService {
             throw new InvalidRequestException(
                     String.format("Invalid date format '%s'. Expected format: yyyy-MM-dd HH:mm:ss", dateStr), e);
         }
+    }
+
+    public static String toRequiredFormat(OffsetDateTime dateTime) {
+        if (dateTime == null) {
+            return null;
+        }
+
+        return dateTime
+                .atZoneSameInstant(ZoneId.systemDefault())
+                .format(DATE_TIME_FORMATTER);
     }
 
     private Pageable createPageable(PaginationRequest pagination) {
@@ -939,8 +946,8 @@ public class VpiRecordingService {
         VpiMetadata dto = new VpiMetadata();
 
         dto.setObjectId(rec.getObjectId());
-        dto.setDateAdded(rec.getDateAdded());
-        dto.setStartTime(rec.getStartTime());
+        dto.setDateAdded(toRequiredFormat(rec.getDateAdded()));
+        dto.setStartTime(toRequiredFormat(rec.getStartTime()));
         dto.setDuration(rec.getDuration());
         dto.setTags(rec.getTags());
         dto.setChannelName(rec.getChannelName());
