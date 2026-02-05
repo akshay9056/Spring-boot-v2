@@ -1,62 +1,76 @@
 package com.avangrid.gui.avangrid_backend.model;
 
-import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.UUID;
 
 public interface VpiCaptureView {
 
-    // Primary & Technical IDs
-    UUID getObjectId();
-    LocalDateTime getDateAdded();
-    String getResourceId();
-    String getWorkstationId();
+    /* ---------- Primary & Technical IDs ---------- */
 
-    // Relationship / Foreign Key
+    UUID getObjectId();
+    OffsetDateTime getDateAdded();
+    UUID getResourceId();
+    UUID getWorkstationId();
+
+    /* ---------- User / Relationship ---------- */
+
     UUID getUserId();
-    String getUserName();// Derived from the VpiUsersCmp object
-    // Time related fields
-    LocalDateTime getStartTime();
-    Integer getGmtOffset();
-    LocalDateTime getGmtStartTime();
+
+    /**
+     * Optional / derived.
+     * May be null if users table is not joined.
+     */
+    String getUserName();
+
+    /* ---------- Time Related ---------- */
+
+    OffsetDateTime getStartTime();
+    Short getGmtOffset();
+    OffsetDateTime getGmtStartTime();
     Integer getDuration();
 
-    // Trigger & Classification
-    String getTriggeredByResourceTypeId();
-    String getTriggeredByObjectId();
-    String getFlagId();
-    String getTags();
-    String getSensitivityLevel();
-    String getClientId();
+    /* ---------- Trigger & Classification ---------- */
 
-    // Channel & Extension Info
-    Integer getChannelNum();
+    UUID getTriggeredByResourceTypeId();
+    UUID getTriggeredByObjectId();
+    Short getFlagId();
+    String getTags();
+    Short getSensitivityLevel();
+    Short getClientId();
+
+    /* ---------- Channel & Extension ---------- */
+
+    Short getChannelNum();
     String getChannelName();
     String getExtensionNum();
     String getAgentId();
     String getPbxDnis();
     String getAnialidigits();
-    String getDirection();
+    Boolean getDirection();
 
-    // Media Management
-    String getMediaFileId();
-    String getMediaManagerId();
+    /* ---------- Media ---------- */
+
+    UUID getMediaFileId();
+    UUID getMediaManagerId();
     String getMediaRetention();
 
-    // Call Tracking
+    /* ---------- Call Tracking ---------- */
+
     String getCallId();
     String getPreviousCallId();
     String getGlobalCallId();
 
-    // Platform & Service
-    String getClassOfService();
-    LocalDateTime getClassOfServiceDate();
+    /* ---------- Platform & Service ---------- */
+
+    Integer getClassOfService();
+    OffsetDateTime getClassOfServiceDate();
     String getXPlatformRef();
 
-    // Transcription & Audio Metadata
-    String getTranscriptResult();
-    String getWarehouseObjectKey();
-    String getTranscriptStatus();
-    Integer getAudioChannels();
+    /* ---------- Transcription & Audio ---------- */
+
+    Short getTranscriptResult();
+    Long getWarehouseObjectKey();
+    Short getTranscriptStatus();
+    Short getAudioChannels();
     Boolean getHasTalkover();
 }
-

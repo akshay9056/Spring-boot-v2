@@ -1,74 +1,95 @@
 package com.avangrid.gui.avangrid_backend.infra.cmp.entity;
 
-import com.avangrid.gui.avangrid_backend.infra.cmp.entity.VpiUsersCmp;
-
 import com.avangrid.gui.avangrid_backend.model.VpiCaptureView;
 import jakarta.persistence.*;
+import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
-import lombok.AccessLevel;
+import org.hibernate.annotations.Immutable;
 
-import java.time.LocalDateTime;
+import java.io.Serializable;
+import java.time.OffsetDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "vpicapturecmp")
+@Table(name = "vpvoiceobjects", schema = "vpicapturevoice")
 @Getter
 @Setter
+@Immutable
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class VpiCaptureCmp implements VpiCaptureView {
+public class VpiCaptureCmp implements VpiCaptureView, Serializable {
+
+    /* ---------- Primary Identifier ---------- */
 
     @Id
     @Column(name = "objectid", nullable = false)
     private UUID objectId;
 
+    /* ---------- Core Timestamps ---------- */
+
     @Column(name = "dateadded")
-    private LocalDateTime dateAdded;
-
-    @Column(name = "resourceid")
-    private String resourceId;
-
-    @Column(name = "workstationid")
-    private String workstationId;
-
-    // ---- Foreign Key ----
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "userid")
-    private VpiUsersCmp user;
+    private OffsetDateTime dateAdded;
 
     @Column(name = "starttime")
-    private LocalDateTime startTime;
-
-    @Column(name = "gmtoffset")
-    private Integer gmtOffset;
+    private OffsetDateTime startTime;
 
     @Column(name = "gmtstarttime")
-    private LocalDateTime gmtStartTime;
+    private OffsetDateTime gmtStartTime;
+
+    @Column(name = "classofservicedate")
+    private OffsetDateTime classOfServiceDate;
+
+    /* ---------- Identifiers ---------- */
+
+    @Column(name = "resourceid", nullable = false)
+    private UUID resourceId;
+
+    @Column(name = "workstationid")
+    private UUID workstationId;
+
+    /**
+     * NOTE:
+     * This table has NO FK constraint.
+     * We deliberately keep this as UUID only.
+     */
+    @Column(name = "userid")
+    private UUID userId;
+
+    /* ---------- Call Timing ---------- */
+
+    @Column(name = "gmtoffset", nullable = false)
+    private Short gmtOffset;
 
     @Column(name = "duration")
     private Integer duration;
 
+    /* ---------- Triggering ---------- */
+
     @Column(name = "triggeredbyresourcetypeid")
-    private String triggeredByResourceTypeId;
+    private UUID triggeredByResourceTypeId;
 
     @Column(name = "triggeredbyobjectid")
-    private String triggeredByObjectId;
+    private UUID triggeredByObjectId;
+
+    /* ---------- Flags / Meta ---------- */
 
     @Column(name = "flagid")
-    private String flagId;
+    private Short flagId;
 
     @Column(name = "tags")
     private String tags;
 
     @Column(name = "sensitivitylevel")
-    private String sensitivityLevel;
+    private Short sensitivityLevel;
 
     @Column(name = "clientid")
-    private String clientId;
+    private Short clientId;
+
+    /* ---------- Channel Info ---------- */
 
     @Column(name = "channelnum")
-    private Integer channelNum;
+    private Short channelNum;
 
     @Column(name = "channelname")
     private String channelName;
@@ -86,16 +107,20 @@ public class VpiCaptureCmp implements VpiCaptureView {
     private String anialidigits;
 
     @Column(name = "direction")
-    private String direction;
+    private Boolean direction;
+
+    /* ---------- Media ---------- */
 
     @Column(name = "mediafileid")
-    private String mediaFileId;
+    private UUID mediaFileId;
 
     @Column(name = "mediamanagerid")
-    private String mediaManagerId;
+    private UUID mediaManagerId;
 
     @Column(name = "mediaretention")
     private String mediaRetention;
+
+    /* ---------- Call Linking ---------- */
 
     @Column(name = "callid")
     private String callId;
@@ -106,40 +131,44 @@ public class VpiCaptureCmp implements VpiCaptureView {
     @Column(name = "globalcallid")
     private String globalCallId;
 
-    @Column(name = "classofservice")
-    private String classOfService;
+    /* ---------- Service / Transcript ---------- */
 
-    @Column(name = "classofservicedate")
-    private LocalDateTime classOfServiceDate;
+    @Column(name = "classofservice")
+    private Integer classOfService;
 
     @Column(name = "xplatformref")
     private String xPlatformRef;
 
-    @Column(name = "transcriptresult")
-    private String transcriptResult;
+    @Column(name = "transcriptresult", nullable = false)
+    private Short transcriptResult;
 
     @Column(name = "warehouseobjectkey")
-    private String warehouseObjectKey;
+    private Long warehouseObjectKey;
 
-    @Column(name = "transcriptstatus")
-    private String transcriptStatus;
+    @Column(name = "transcriptstatus", nullable = false)
+    private Short transcriptStatus;
 
     @Column(name = "audiochannels")
-    private Integer audioChannels;
+    private Short audioChannels;
 
     @Column(name = "hastalkover")
     private Boolean hasTalkover;
 
+    /* ---------- VpiCaptureView ---------- */
+
     @Override
     public UUID getUserId() {
-        return user != null ? user.getUserid() : null;
+        return userId;
     }
 
+    /**
+     * Username is NOT available from this table.
+     * Must be joined manually or resolved in service layer.
+     */
     @Override
     public String getUserName() {
-        return user != null ? user.getFullname() : null;
+        return null;
     }
 
+
 }
-
-

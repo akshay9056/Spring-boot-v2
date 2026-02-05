@@ -4,32 +4,28 @@ import com.avangrid.gui.avangrid_backend.model.VpiFiltersRequest;
 import org.springframework.data.jpa.domain.Specification;
 
 import jakarta.persistence.criteria.*;
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.UUID;
+import java.time.OffsetDateTime;
+import java.util.*;
 
 public final class CaptureSpecifications {
 
-    private CaptureSpecifications() {
-    }
+    private CaptureSpecifications() {}
 
     /* ===========================================================
-       DATE RANGE
+       DATE RANGE (OffsetDateTime)
     =========================================================== */
 
     public static <T> Specification<T> dateBetween(
             String field,
-            LocalDateTime from,
-            LocalDateTime to
+            OffsetDateTime from,
+            OffsetDateTime to
     ) {
         return (root, query, cb) -> {
             if (from == null && to == null) {
                 return cb.conjunction();
             }
 
-            Path<LocalDateTime> path = root.get(field);
+            Path<OffsetDateTime> path = root.get(field);
 
             if (from != null && to != null) {
                 return cb.between(path, from, to);
@@ -42,7 +38,7 @@ public final class CaptureSpecifications {
     }
 
     /* ===========================================================
-       EXACT MATCH : OBJECT IDS (UUID)
+       OBJECT ID (UUID IN)
     =========================================================== */
 
     public static <T> Specification<T> objectIdsExactAny(
@@ -55,23 +51,22 @@ public final class CaptureSpecifications {
                 return cb.conjunction();
             }
 
-            CriteriaBuilder.In<UUID> inClause = cb.in(root.get(field));
-            cleaned.forEach(inClause::value);
-
-            return inClause;
+            CriteriaBuilder.In<UUID> in = cb.in(root.get(field));
+            cleaned.forEach(in::value);
+            return in;
         };
     }
 
     /* ===========================================================
-       EXACT MATCH : DIRECTION (0 or 1)
+       DIRECTION (BOOLEAN)
     =========================================================== */
 
     public static <T> Specification<T> directionExact(
             String field,
-            Integer direction
+            Boolean direction
     ) {
         return (root, query, cb) -> {
-            if (direction == null || (direction != 0 && direction != 1)) {
+            if (direction == null) {
                 return cb.conjunction();
             }
             return cb.equal(root.get(field), direction);
@@ -79,7 +74,7 @@ public final class CaptureSpecifications {
     }
 
     /* ===========================================================
-       SUBSTRING MATCH : STRING COLUMNS
+       STRING CONTAINS (LIKE)
     =========================================================== */
 
     public static <T> Specification<T> containsAny(
@@ -93,18 +88,22 @@ public final class CaptureSpecifications {
             }
 
             Expression<String> column = cb.lower(root.get(field));
-            List<Predicate> predicates = new ArrayList<>();
 
+            List<Predicate> predicates = new ArrayList<>();
             for (String value : cleaned) {
                 predicates.add(cb.like(column, "%" + value + "%"));
             }
 
-            return cb.or(predicates.toArray(new Predicate[0]));
+            return cb.and(
+                    cb.isNotNull(root.get(field)), // ⭐ IMPORTANT
+                    cb.or(predicates.toArray(new Predicate[0]))
+            );
         };
     }
 
+
     /* ===========================================================
-       SUBSTRING MATCH : INTEGER COLUMN (channelNum)
+       INTEGER CONTAINS (channelNum)
     =========================================================== */
 
     public static <T> Specification<T> channelNumContainsAny(
@@ -128,89 +127,77 @@ public final class CaptureSpecifications {
         };
     }
 
-    /* ===========================================================
-       FULLNAME JOIN : user.fullname
-    =========================================================== */
+    public static <T> Specification<T> userIdsIn(
+            String field,
+            Set<UUID> userIds) {
 
-    public static <T> Specification<T> fullnameContainsAny(
-            List<String> values
-    ) {
         return (root, query, cb) -> {
-            List<String> cleaned = cleanStringList(values);
-            if (cleaned.isEmpty()) {
+            if (userIds == null || userIds.isEmpty()) {
                 return cb.conjunction();
             }
-
-            Join<T, ?> userJoin = root.join("user", JoinType.LEFT);
-            Expression<String> fullnameCol = cb.lower(userJoin.get("fullname"));
-
-            List<Predicate> predicates = new ArrayList<>();
-            for (String value : cleaned) {
-                predicates.add(cb.like(fullnameCol, "%" + value + "%"));
-            }
-
-            return cb.or(predicates.toArray(new Predicate[0]));
+            CriteriaBuilder.In<UUID> in = cb.in(root.get(field));
+            userIds.forEach(in::value);
+            return in;
         };
     }
 
 
-    private static List<String> cleanStringList(List<String> input) {
-        if (input == null) {
-            return Collections.emptyList();
+    /* ===========================================================
+       BUILDER (NO JOINS)
+    =========================================================== */
+
+    public static <T> Specification<T> build(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            VpiFiltersRequest filters,
+            Set<UUID> matchedUserIds
+
+    ) {
+        Specification<T> spec =
+                Specification.where(dateBetween("dateAdded", from, to));
+
+        if (filters == null) {
+            return spec;
         }
+
+        if (matchedUserIds != null && !matchedUserIds.isEmpty()) {
+            spec = spec.and(userIdsIn("userId", matchedUserIds));
+        }
+
+        return spec
+                .and(objectIdsExactAny("objectId", filters.getObjectIDs()))
+                .and(directionExact("direction", filters.getDirection()))
+                .and(containsAny("extensionNum", filters.getExtensionNum()))
+                .and(channelNumContainsAny("channelNum", filters.getChannelNum()))
+                .and(containsAny("anialidigits", filters.getAniAliDigits()))
+                .and(containsAny("agentId", filters.getAgentID()));
+
+
+    }
+
+    /* ===========================================================
+       CLEANERS
+    =========================================================== */
+
+    private static List<String> cleanStringList(List<String> input) {
+        if (input == null) return Collections.emptyList();
 
         List<String> cleaned = new ArrayList<>();
         for (String value : input) {
-            if (value != null) {
-                String trimmed = value.trim();
-                if (!trimmed.isEmpty()) {
-                    cleaned.add(trimmed.toLowerCase());
-                }
+            if (value != null && !value.trim().isEmpty()) {
+                cleaned.add(value.trim().toLowerCase());
             }
         }
         return cleaned;
     }
 
     private static List<UUID> cleanUuidList(List<UUID> input) {
-        if (input == null) {
-            return Collections.emptyList();
-        }
+        if (input == null) return Collections.emptyList();
 
         List<UUID> cleaned = new ArrayList<>();
         for (UUID value : input) {
-            if (value != null) {
-                cleaned.add(value);
-            }
+            if (value != null) cleaned.add(value);
         }
         return cleaned;
     }
-
-    public static <T> Specification<T> build(
-            LocalDateTime from,
-            LocalDateTime to,
-            VpiFiltersRequest filters
-    ) {
-        Specification<T> spec = Specification.where(
-                CaptureSpecifications.dateBetween("dateAdded", from, to)
-        );
-
-        if (filters == null) {
-            return spec;
-        }
-
-        return spec
-                .and(CaptureSpecifications.objectIdsExactAny(
-                        "objectId", filters.getObjectIDs()))
-                .and(CaptureSpecifications.directionExact(
-                        "direction", filters.getDirection()))
-                .and(CaptureSpecifications.containsAny(
-                        "extensionNum", filters.getExtensionNum()))
-                .and(CaptureSpecifications.channelNumContainsAny(
-                        "channelNum", filters.getChannelNum()))
-                .and(CaptureSpecifications.containsAny(
-                        "anialidigits", filters.getAniAliDigits()))
-                .and(CaptureSpecifications.fullnameContainsAny(
-                        filters.getName()));
-    }
-
 }

@@ -1,145 +1,174 @@
 package com.avangrid.gui.avangrid_backend.infra.nyseg.entity;
-import com.avangrid.gui.avangrid_backend.infra.nyseg.entity.VpiUsersNyseg;
 
 import com.avangrid.gui.avangrid_backend.model.VpiCaptureView;
 import jakarta.persistence.*;
+import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
-import lombok.AccessLevel;
+import org.hibernate.annotations.Immutable;
 
-import java.time.LocalDateTime;
+import java.io.Serializable;
+import java.time.OffsetDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "vpicapturenyseg")
+@Table(name = "vpvoiceobjects", schema = "vpicapturevoice")
 @Getter
 @Setter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-public class VpiCaptureNyseg implements VpiCaptureView {
+@Immutable
+public class VpiCaptureNyseg implements VpiCaptureView, Serializable {
 
-        @Id
-        @Column(name = "objectid", nullable = false)
-        private UUID objectId;
+    /* ---------- Primary Identifier ---------- */
 
-        @Column(name = "dateadded")
-        private LocalDateTime dateAdded;
+    @Id
+    @Column(name = "objectid", nullable = false)
+    private UUID objectId;
 
-        @Column(name = "resourceid")
-        private String resourceId;
+    /* ---------- Core Timestamps ---------- */
 
-        @Column(name = "workstationid")
-        private String workstationId;
+    @Column(name = "dateadded")
+    private OffsetDateTime dateAdded;
 
-        // ---- Foreign Key ----
-        @ManyToOne(fetch = FetchType.LAZY)
-        @JoinColumn(name = "userid")
-        private VpiUsersNyseg user;
+    @Column(name = "starttime")
+    private OffsetDateTime startTime;
 
-        @Column(name = "starttime")
-        private LocalDateTime startTime;
+    @Column(name = "gmtstarttime")
+    private OffsetDateTime gmtStartTime;
 
-        @Column(name = "gmtoffset")
-        private Integer gmtOffset;
+    @Column(name = "classofservicedate")
+    private OffsetDateTime classOfServiceDate;
 
-        @Column(name = "gmtstarttime")
-        private LocalDateTime gmtStartTime;
+    /* ---------- Identifiers ---------- */
 
-        @Column(name = "duration")
-        private Integer duration;
+    @Column(name = "resourceid", nullable = false)
+    private UUID resourceId;
 
-        @Column(name = "triggeredbyresourcetypeid")
-        private String triggeredByResourceTypeId;
+    @Column(name = "workstationid")
+    private UUID workstationId;
 
-        @Column(name = "triggeredbyobjectid")
-        private String triggeredByObjectId;
+    /**
+     * NOTE:
+     * This table has NO FK constraint.
+     * We deliberately keep this as UUID only.
+     */
+    @Column(name = "userid")
+    private UUID userId;
 
-        @Column(name = "flagid")
-        private String flagId;
+    /* ---------- Call Timing ---------- */
 
-        @Column(name = "tags")
-        private String tags;
+    @Column(name = "gmtoffset", nullable = false)
+    private Short gmtOffset;
 
-        @Column(name = "sensitivitylevel")
-        private String sensitivityLevel;
+    @Column(name = "duration")
+    private Integer duration;
 
-        @Column(name = "clientid")
-        private String clientId;
+    /* ---------- Triggering ---------- */
 
-        @Column(name = "channelnum")
-        private Integer channelNum;
+    @Column(name = "triggeredbyresourcetypeid")
+    private UUID triggeredByResourceTypeId;
 
-        @Column(name = "channelname")
-        private String channelName;
+    @Column(name = "triggeredbyobjectid")
+    private UUID triggeredByObjectId;
 
-        @Column(name = "extensionnum")
-        private String extensionNum;
+    /* ---------- Flags / Meta ---------- */
 
-        @Column(name = "agentid")
-        private String agentId;
+    @Column(name = "flagid")
+    private Short flagId;
 
-        @Column(name = "pbxdnis")
-        private String pbxDnis;
+    @Column(name = "tags")
+    private String tags;
 
-        @Column(name = "anialidigits")
-        private String anialidigits;
+    @Column(name = "sensitivitylevel")
+    private Short sensitivityLevel;
 
-        @Column(name = "direction")
-        private String direction;
+    @Column(name = "clientid")
+    private Short clientId;
 
-        @Column(name = "mediafileid")
-        private String mediaFileId;
+    /* ---------- Channel Info ---------- */
 
-        @Column(name = "mediamanagerid")
-        private String mediaManagerId;
+    @Column(name = "channelnum")
+    private Short channelNum;
 
-        @Column(name = "mediaretention")
-        private String mediaRetention;
+    @Column(name = "channelname")
+    private String channelName;
 
-        @Column(name = "callid")
-        private String callId;
+    @Column(name = "extensionnum")
+    private String extensionNum;
 
-        @Column(name = "previouscallid")
-        private String previousCallId;
+    @Column(name = "agentid")
+    private String agentId;
 
-        @Column(name = "globalcallid")
-        private String globalCallId;
+    @Column(name = "pbxdnis")
+    private String pbxDnis;
 
-        @Column(name = "classofservice")
-        private String classOfService;
+    @Column(name = "anialidigits")
+    private String anialidigits;
 
-        @Column(name = "classofservicedate")
-        private LocalDateTime classOfServiceDate;
+    @Column(name = "direction")
+    private Boolean direction;
 
-        @Column(name = "xplatformref")
-        private String xPlatformRef;
+    /* ---------- Media ---------- */
 
-        @Column(name = "transcriptresult")
-        private String transcriptResult;
+    @Column(name = "mediafileid")
+    private UUID mediaFileId;
 
-        @Column(name = "warehouseobjectkey")
-        private String warehouseObjectKey;
+    @Column(name = "mediamanagerid")
+    private UUID mediaManagerId;
 
-        @Column(name = "transcriptstatus")
-        private String transcriptStatus;
+    @Column(name = "mediaretention")
+    private String mediaRetention;
 
-        @Column(name = "audiochannels")
-        private Integer audioChannels;
+    /* ---------- Call Linking ---------- */
 
-        @Column(name = "hastalkover")
-        private Boolean hasTalkover;
+    @Column(name = "callid")
+    private String callId;
 
-        @Override
-        public UUID getUserId() {
-        return user != null ? user.getUserid() : null;
-        }
+    @Column(name = "previouscallid")
+    private String previousCallId;
+
+    @Column(name = "globalcallid")
+    private String globalCallId;
+
+    /* ---------- Service / Transcript ---------- */
+
+    @Column(name = "classofservice")
+    private Integer classOfService;
+
+    @Column(name = "xplatformref")
+    private String xPlatformRef;
+
+    @Column(name = "transcriptresult", nullable = false)
+    private Short transcriptResult;
+
+    @Column(name = "warehouseobjectkey")
+    private Long warehouseObjectKey;
+
+    @Column(name = "transcriptstatus", nullable = false)
+    private Short transcriptStatus;
+
+    @Column(name = "audiochannels")
+    private Short audioChannels;
+
+    @Column(name = "hastalkover")
+    private Boolean hasTalkover;
+
+    /* ---------- VpiCaptureView ---------- */
 
     @Override
+    public UUID getUserId() {
+        return userId;
+    }
+
+    /**
+     * Username is NOT available from this table.
+     * Must be joined manually or resolved in service layer.
+     */
+    @Override
     public String getUserName() {
-        return user != null ? user.getFullname() : null;
+        return null;
     }
 
-    }
 
-
-
+}

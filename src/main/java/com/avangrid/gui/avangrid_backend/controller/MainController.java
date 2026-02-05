@@ -11,6 +11,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+
 
 
 import java.util.List;
@@ -30,34 +33,6 @@ public class MainController {
         this.service = service;
     }
 
-//    @GetMapping("/recordings")
-//    @Transactional(transactionManager = "cmpTransactionManager")
-//    public List<VpiMetadata> getAllRecordings() {
-//
-//        return captureRepo.findAll()
-//                .stream()
-//                .map(rec -> {
-//                    VpiMetadata dto = new VpiMetadata();
-//
-//                    dto.setObjectId(rec.getObjectId());
-//                    dto.setDateAdded(rec.getDateAdded());
-//                    dto.setStartTime(rec.getStartTime());
-//                    dto.setDuration(rec.getDuration());
-//                    dto.setTags(rec.getTags());
-//                    dto.setChannelName(rec.getChannelName());
-//                    dto.setCallId(rec.getCallId());
-//
-//                    if (rec.getUser() != null) {
-//                        dto.setUserId(rec.getUser().getUserid());
-//                        dto.setUserName(rec.getUser().getFullname());
-//                    }
-//
-//                    return dto;
-//                })
-//                .toList();
-//    }
-
-
     @PostMapping("/search")
     public ResponseEntity<VpiSearchResponse> search(
             @Valid @RequestBody VpiSearchRequest request) {
@@ -65,10 +40,13 @@ public class MainController {
     }
 
     @GetMapping("/metadata")
-    public ResponseEntity<Map<String,Object>> getMetadata(
-            @Valid @RequestParam(required = true) UUID id,@Valid @RequestParam(required = true) String opco) {
-        return ResponseEntity.ok(service.getMetadata(id,opco));
+    public ResponseEntity<Map<String, Object>> getMetadata(
+            @RequestParam @NotNull UUID id,
+            @RequestParam @NotBlank String opco
+    ) {
+        return ResponseEntity.ok(service.getMetadata(id, opco));
     }
+
 
     @PostMapping("/recording")
     public ResponseEntity<ByteArrayResource> getRecordingVpi(
