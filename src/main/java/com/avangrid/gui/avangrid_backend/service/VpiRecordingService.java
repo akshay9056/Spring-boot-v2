@@ -306,7 +306,6 @@ public class VpiRecordingService {
             return buildZipResponse(baos.toByteArray());
 
         } catch (IOException e) {
-            logger.error("Failed to create ZIP file", e);
             throw new RecordingProcessingException("Failed to create ZIP", e);
         }
     }
@@ -405,19 +404,15 @@ public class VpiRecordingService {
 
         } catch (TimeoutException e) {
             destroyProcess(process);
-            logger.error("Conversion timed out after {} seconds", CONVERSION_TIMEOUT_SECONDS);
-            throw new RecordingProcessingException(
+           throw new RecordingProcessingException(
                     "Conversion timed out after " + CONVERSION_TIMEOUT_SECONDS + " seconds", e);
         } catch (ExecutionException e) {
-            logger.error("Conversion failed during execution", e.getCause());
-            throw new RecordingProcessingException("Conversion failed", e.getCause());
+           throw new RecordingProcessingException("Conversion failed", e.getCause());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             destroyProcess(process);
-            logger.error("Conversion interrupted", e);
             throw new RecordingProcessingException("Conversion interrupted", e);
         } catch (IOException e) {
-            logger.error("Failed to start FFmpeg process", e);
             throw new RecordingProcessingException("Failed to start FFmpeg process", e);
         } finally {
             destroyProcess(process);
@@ -520,7 +515,6 @@ public class VpiRecordingService {
         try {
             return LocalDateTime.parse(dateStr, DATE_TIME_FORMATTER);
         } catch (DateTimeParseException e) {
-            logger.error("Failed to parse datetime: {}", dateStr, e);
             throw new InvalidRequestException(
                     String.format("Invalid date format '%s'. Expected format: yyyy-MM-dd HH:mm:ss", dateStr), e);
         }
@@ -537,7 +531,6 @@ public class VpiRecordingService {
         try {
             return LocalDateTime.parse(dateStr, XML_FORMATTER);
         } catch (DateTimeParseException e) {
-            logger.error("Failed to parse XML datetime: {}", dateStr, e);
             throw new InvalidRequestException(
                     String.format("Invalid date format '%s'. Expected format: M/d/yyyy h:mm:ss a", dateStr), e);
         }
@@ -588,7 +581,6 @@ public class VpiRecordingService {
                     year, month, day, hour12, minute, second);
 
         } catch (DateTimeParseException ex) {
-            logger.error("Failed to parse XML start time: {}", xmlStartTime, ex);
             throw new IllegalArgumentException(
                     "Invalid XML startTime format. Expected: M/d/yyyy h:mm:ss a → " + xmlStartTime, ex);
         }
@@ -697,14 +689,48 @@ public class VpiRecordingService {
         String prefix = buildDayPrefix(req.getOpco(), parseDateTimeXML(req.getDate()).toLocalDate());
         String normalizedCustomer = normalize(req.getUsername());
 
-        List<String> xmlCandidates = "CMP".equalsIgnoreCase(req.getOpco())
-                ? findCmpXmlBlobs(prefix + "Metadata/")
-                : findMatchingXmlBlobs(prefix, fileDate, normalizedCustomer);
+        List<String> xmlCandidates = findXmlCandidates(req.getOpco(), prefix, fileDate, normalizedCustomer);
 
         if (xmlCandidates.isEmpty()) {
             throw new RecordingNotFoundException("No XML recordings found");
         }
 
+        List<MediaMetadata> matchedMedia = processXmlCandidates(
+                xmlCandidates, fileDate, normalizedCustomer, req);
+
+        return buildRecordingResult(matchedMedia, prefix);
+    }
+
+    /**
+     * Finds XML blob candidates based on OPCO type.
+     *
+     * @param opco Operating company code
+     * @param prefix Blob prefix path
+     * @param fileDate File timestamp
+     * @param normalizedCustomer Normalized customer name
+     * @return List of XML blob names
+     */
+    private List<String> findXmlCandidates(String opco, String prefix,
+                                           String fileDate, String normalizedCustomer) {
+        return "CMP".equalsIgnoreCase(opco)
+                ? findCmpXmlBlobs(prefix + "Metadata/")
+                : findMatchingXmlBlobs(prefix, fileDate, normalizedCustomer);
+    }
+
+    /**
+     * Processes XML candidates and extracts matching media metadata.
+     *
+     * @param xmlCandidates List of XML blob names to process
+     * @param fileDate Expected file timestamp
+     * @param normalizedCustomer Normalized customer name
+     * @param req Recording request with filter criteria
+     * @return List of matched MediaMetadata
+     * @throws RecordingNotFoundException if no matches found
+     */
+    private List<MediaMetadata> processXmlCandidates(List<String> xmlCandidates,
+                                                     String fileDate,
+                                                     String normalizedCustomer,
+                                                     RecordingRequest req) {
         List<MediaMetadata> matchedMedia = new ArrayList<>();
         boolean metadataFoundButNoMatch = false;
 
@@ -716,25 +742,46 @@ public class VpiRecordingService {
             }
 
             for (MediaMetadata media : metaMatch) {
-                if (!matchesMetadata(media, req.getAnialidigits(), req.getDuration(),
+                if (matchesMetadata(media, req.getAniAliDigits(), req.getDuration(),
                         req.getExtensionNum(), req.getChannelNum(), req.getObjectId())) {
-                    continue;
-                }
-                metadataFoundButNoMatch = true;
+                    metadataFoundButNoMatch = true;
 
-                if ("SUCCESS".equals(media.getResult())) {
-                    matchedMedia.add(media);
+                    if (STATUS_RECORDING_SUCCESS.equals(media.getResult())) {
+                        matchedMedia.add(media);
+                    }
                 }
             }
         }
 
+        validateMatchedMedia(matchedMedia, metadataFoundButNoMatch);
+        return matchedMedia;
+    }
+
+    /**
+     * Validates that matched media is not empty and throws appropriate exception.
+     *
+     * @param matchedMedia List of matched media
+     * @param metadataFoundButNoMatch Flag indicating if metadata was found but didn't match
+     * @throws RecordingNotFoundException if no matches found with appropriate message
+     */
+    private void validateMatchedMedia(List<MediaMetadata> matchedMedia,
+                                      boolean metadataFoundButNoMatch) {
         if (matchedMedia.isEmpty()) {
             if (metadataFoundButNoMatch) {
                 throw new RecordingNotFoundException("Recording audio is not migrated to the Azure blob");
             }
             throw new RecordingNotFoundException("Recording xml found but metadata mismatch");
         }
+    }
 
+    /**
+     * Builds the final recording search result from matched media.
+     *
+     * @param matchedMedia List of matched media metadata
+     * @param prefix Blob prefix path
+     * @return RecordingSearchResult with blob name and multiple match flag
+     */
+    private RecordingSearchResult buildRecordingResult(List<MediaMetadata> matchedMedia, String prefix) {
         RecordingSearchResult result = new RecordingSearchResult();
         result.setBlobName(prefix + matchedMedia.getFirst().getFileName());
 
@@ -745,7 +792,6 @@ public class VpiRecordingService {
 
         return result;
     }
-
     /**
      * Finds XML blob files for CMP OPCO.
      *
@@ -859,7 +905,6 @@ public class VpiRecordingService {
                 return processMediaXml(is);
             }
         } catch (IOException e) {
-            logger.error("Failed to parse XML blob: {}", blobName, e);
             throw new RecordingProcessingException("Failed parsing XML " + blobName, e);
         }
     }
@@ -1027,7 +1072,6 @@ public class VpiRecordingService {
         try {
             return vpiAzureRepository.getBlobContent(blobName);
         } catch (Exception e) {
-            logger.error("Failed to download blob: {}", blobName, e);
             throw new RecordingProcessingException("Failed to download recording: " + e.getMessage(), e);
         }
     }
@@ -1189,7 +1233,6 @@ public class VpiRecordingService {
                 return output.toByteArray();
 
             } catch (IOException e) {
-                logger.error("Failed to read output data from FFmpeg", e);
                 throw new UncheckedIOException("Read failed", e);
             }
         });
@@ -1206,7 +1249,6 @@ public class VpiRecordingService {
      */
     private void validateConversionResult(int exitCode, String errors, int inputSize, int outputSize) {
         if (exitCode != 0) {
-            logger.error("FFmpeg conversion failed. Exit code: {}, Errors: {}", exitCode, errors);
             throw new RecordingProcessingException(
                     String.format("FFmpeg failed (exit %d): %s", exitCode, errors));
         }
@@ -1769,8 +1811,8 @@ public class VpiRecordingService {
         dto.setAgentId(rec.getAgentId());
         dto.setExtensionNum(rec.getExtensionNum());
         dto.setChannelNum(rec.getChannelNum());
-        dto.setAniAlidigts(rec.getAnialidigits());
-        dto.setUserName(userNameMap.get(rec.getUserId()));
+        dto.setAniAliDigits(rec.getAnialidigits());
+        dto.setUsername(userNameMap.get(rec.getUserId()));
         dto.setDirection(rec.getDirection());
         dto.setOpco(opco);
 

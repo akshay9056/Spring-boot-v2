@@ -16,8 +16,8 @@ public class VpiMetadata {
     private String channelName;
     private short channelNum;
     private String callId;
-    private String userName;
-    private String aniAlidigts;
+    private String username;
+    private String aniAliDigits;
     private String extensionNum;
     private boolean direction;
     private String agentId;

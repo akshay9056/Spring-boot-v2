@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
-import java.util.UUID;
 
 @JsonIgnoreProperties(ignoreUnknown = false)
 @Data
@@ -17,7 +16,7 @@ public class RecordingRequest {
     @JsonProperty(required = true)
     private String username;
     @JsonProperty(required = true)
-    private String anialidigits;
+    private String aniAliDigits;
     @JsonProperty(required = true)
     private Integer duration;
     @JsonProperty(required = true)

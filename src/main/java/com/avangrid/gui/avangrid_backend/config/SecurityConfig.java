@@ -45,13 +45,16 @@ public class SecurityConfig {
             "/actuator/info",
             "/swagger-ui/**",
             "/v3/api-docs/**",
+            "/api/v1/search",
+            "/api/v1/recording",
+            "/api/v1/download",
             "/biz/avangrid-backend/v1/swagger-ui/**"
     };
 
     private static final String[] AUTHENTICATED_ENDPOINTS = {
-            "/api/v1/download",
-            "/api/v1/recording",
-            "/api/v1/search",
+
+
+
             "/api/v1/metadata"
     };
 
@@ -81,7 +84,7 @@ public class SecurityConfig {
         http
                 .cors(Customizer.withDefaults())
                 .csrf(AbstractHttpConfigurer::disable)
-                .requiresChannel(channel -> channel.anyRequest().requiresSecure())
+//                .requiresChannel(channel -> channel.anyRequest().requiresSecure())
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )

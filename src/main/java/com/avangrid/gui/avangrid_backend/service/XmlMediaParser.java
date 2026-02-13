@@ -140,13 +140,10 @@ public class XmlMediaParser {
             return results;
 
         } catch (ParserConfigurationException e) {
-            logger.error("XML parser configuration error", e);
             throw new RecordingProcessingException("XML parser configuration failed", e);
         } catch (SAXException e) {
-            logger.error("XML parsing error - invalid XML structure", e);
             throw new RecordingProcessingException("XML parsing failed - invalid XML", e);
         } catch (IOException e) {
-            logger.error("IO error while reading XML stream", e);
             throw new RecordingProcessingException("Failed to read XML stream", e);
         }
     }
@@ -180,7 +177,6 @@ public class XmlMediaParser {
             return Collections.singletonList(buildMetadata(root));
         }
 
-        logger.error("Invalid XML root element: {}", rootTag);
         throw new RecordingProcessingException(
                 String.format("Invalid XML: Root element must be '%s' or '%s', found: %s",
                         EXPORT_SUMMARY_TAG, MEDIA_TAG, rootTag)
