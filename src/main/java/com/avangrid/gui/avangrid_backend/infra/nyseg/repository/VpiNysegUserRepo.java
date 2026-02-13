@@ -1,28 +1,18 @@
 package com.avangrid.gui.avangrid_backend.infra.nyseg.repository;
 
+import com.avangrid.gui.avangrid_backend.infra.generic.VpiUserRepo;
 import com.avangrid.gui.avangrid_backend.infra.nyseg.entity.VpiUsersNyseg;
-import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
-import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
 @Repository
-public interface VpiNysegUserRepo extends JpaRepository<VpiUsersNyseg, UUID> {
+public interface VpiNysegUserRepo extends VpiUserRepo<VpiUsersNyseg> {
 
-    /**
-     * Batch fetch users by IDs
-     * Used for enriching capture records
-     */
-    List<VpiUsersNyseg> findByUserIdIn(Collection<UUID> userIds);
-
-    /**
-     * Optional: search users by fullname (case-insensitive)
-     * Used BEFORE capture query if filtering by name
-     */
+    @Override
     @Query(
             value = """
         select distinct u.userid
@@ -37,5 +27,4 @@ public interface VpiNysegUserRepo extends JpaRepository<VpiUsersNyseg, UUID> {
     List<UUID> findUserIdsByFullNameContainsAny(
             @Param("names") String[] names
     );
-
 }

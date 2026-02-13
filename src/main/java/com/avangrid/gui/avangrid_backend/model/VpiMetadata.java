@@ -14,6 +14,7 @@ public class VpiMetadata {
     private Integer duration;
     private String tags;
     private String channelName;
+    private short channelNum;
     private String callId;
     private String userName;
     private String aniAlidigts;
@@ -22,5 +23,4 @@ public class VpiMetadata {
     private String agentId;
     private String opco;
 }
-
 

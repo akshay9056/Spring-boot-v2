@@ -16,11 +16,6 @@ public interface VpiCaptureView {
 
     UUID getUserId();
 
-    /**
-     * Optional / derived.
-     * May be null if users table is not joined.
-     */
-    String getUserName();
 
     /* ---------- Time Related ---------- */
 
