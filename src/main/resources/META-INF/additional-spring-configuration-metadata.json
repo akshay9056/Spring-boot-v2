@@ -1,0 +1,27 @@
+{"properties": [
+  {
+    "name": "azure.client-id",
+    "type": "java.lang.String",
+    "description": "A description for 'azure.client-id'"
+  },
+  {
+    "name": "azure.storage.container-name",
+    "type": "java.lang.String",
+    "description": "A description for 'azure.storage.container-name'"
+  },
+  {
+    "name": "azure.storage.account-name",
+    "type": "java.lang.String",
+    "description": "A description for 'azure.storage.account-name'"
+  },
+  {
+    "name": "azure.client-secret",
+    "type": "java.lang.String",
+    "description": "A description for 'azure.client-secret'"
+  },
+  {
+    "name": "azure.tenant-id",
+    "type": "java.lang.String",
+    "description": "A description for 'azure.tenant-id'"
+  }
+]}
