@@ -8,6 +8,8 @@ COPY .mvn .mvn
 COPY mvnw .
 RUN chmod +x mvnw
 
+
+
 # Copy pom.xml and download dependencies
 COPY pom.xml .
 RUN ./mvnw dependency:go-offline -B
@@ -31,5 +33,6 @@ COPY --from=builder /app/target/*.jar app.jar
 
 EXPOSE 8080
 ENV PORT=8080
+ENV SPRING_PROFILES_ACTIVE=dev
 
 ENTRYPOINT ["java","-jar","app.jar"]
