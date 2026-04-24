@@ -22,7 +22,7 @@ public class OpcoService {
 
     private final String adminGroupId;
 
-    private static final Set<String> ALL_OPCOS = Set.of("NYSEG", "CMP", "RGE");
+    private static final Set<String> ADMIN = Set.of("ADMIN");
 
     public OpcoService(
             @Value("#{${app.opco-groups}}") Map<String, String> opcoGroups,
@@ -52,7 +52,7 @@ public class OpcoService {
         // Admin group → full access
         if (tokenGroups.contains(adminGroupId)) {
             log.debug("Subject '{}' is admin — granting all opcos", jwt.getSubject());
-            return ALL_OPCOS;
+            return ADMIN;
         }
 
         // Map whichever group IDs are present to their opco codes
