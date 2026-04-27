@@ -38,7 +38,7 @@ public class MainController {
     @Operation(summary = "Get opco codes the current user has access to")
     @GetMapping("/opcos")
     public ResponseEntity<Set<String>> getUserOpcos(@AuthenticationPrincipal Jwt jwt) {
-        return ResponseEntity.ok(opcoService.resolveOpcos(jwt));
+        return ResponseEntity.ok(opcoService.resolveOpcoResponse(jwt));
     }
 
     // -------------------- SEARCH --------------------

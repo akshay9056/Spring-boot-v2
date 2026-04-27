@@ -24,6 +24,8 @@ public class OpcoService {
 
     private static final Set<String> ADMIN = Set.of("ADMIN");
 
+    private static final Set<String> ALL_OPCOS = Set.of("NYSEG", "CMP", "RGE");
+
     public OpcoService(
             @Value("#{${app.opco-groups}}") Map<String, String> opcoGroups,
             @Value("${app.admin-group-id}") String adminGroupId) {
@@ -52,7 +54,7 @@ public class OpcoService {
         // Admin group → full access
         if (tokenGroups.contains(adminGroupId)) {
             log.debug("Subject '{}' is admin — granting all opcos", jwt.getSubject());
-            return ADMIN;
+            return ALL_OPCOS;
         }
 
         // Map whichever group IDs are present to their opco codes
@@ -70,5 +72,24 @@ public class OpcoService {
             return false;
         }
         return resolveOpcos(jwt).contains(requestedOpco.toUpperCase());
+    }
+
+
+    public Set<String> resolveOpcoResponse(Jwt jwt) {
+        List<String> tokenGroups = jwt.getClaimAsStringList("groups");
+
+        if (tokenGroups == null || tokenGroups.isEmpty()) {
+            return Set.of();
+        }
+
+        // Return "ADMIN" label to frontend for UI handling
+        if (tokenGroups.contains(adminGroupId)) {
+            return Set.of("ADMIN");
+        }
+
+        return tokenGroups.stream()
+                .filter(groupIdToOpco::containsKey)
+                .map(groupIdToOpco::get)
+                .collect(Collectors.toSet());
     }
 }

@@ -154,17 +154,17 @@ public final class CaptureSpecifications {
 
     ) {
         Specification<T> spec =
-                Specification.where(dateBetween("dateAdded", from, to));
+                Specification.where(dateBetween("startTime", from, to));
 
         if (filters == null) {
-            return spec;
+            return addOrderByStartTime(spec);
         }
 
         if (matchedUserIds != null && !matchedUserIds.isEmpty()) {
             spec = spec.and(userIdsIn("userId", matchedUserIds));
         }
 
-        return spec
+        spec = spec
                 .and(objectIdsExactAny("objectId", filters.getObjectIDs()))
                 .and(directionExact("direction", filters.getDirection()))
                 .and(containsAny("extensionNum", filters.getExtensionNum()))
@@ -172,9 +172,22 @@ public final class CaptureSpecifications {
                 .and(containsAny("anialidigits", filters.getAniAliDigits()))
                 .and(containsAny("agentId", filters.getAgentID()));
 
-
+        return addOrderByStartTime(spec);
     }
 
+    // ---------------------------------------------------------------
+    // ORDER BY startTime ASC
+    // ---------------------------------------------------------------
+    private static <T> Specification<T> addOrderByStartTime(Specification<T> spec) {
+        return (root, query, cb) -> {
+            // Only apply orderBy on the main query, not subqueries (count queries)
+            if (query != null && query.getResultType() != Long.class
+                    && query.getResultType() != long.class) {
+                query.orderBy(cb.asc(root.get("startTime")));
+            }
+            return spec.toPredicate(root, query, cb);
+        };
+    }
     /* ===========================================================
        CLEANERS
     =========================================================== */

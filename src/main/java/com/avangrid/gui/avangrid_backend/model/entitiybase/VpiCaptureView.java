@@ -66,6 +66,5 @@ public interface VpiCaptureView {
     Short getTranscriptResult();
     Long getWarehouseObjectKey();
     Short getTranscriptStatus();
-    Short getAudioChannels();
-    Boolean getHasTalkover();
+
 }

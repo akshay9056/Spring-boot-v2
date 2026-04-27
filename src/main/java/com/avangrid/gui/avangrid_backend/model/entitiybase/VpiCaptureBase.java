@@ -141,16 +141,6 @@ public class VpiCaptureBase implements VpiCaptureView, Serializable {
     @Column(name = "transcriptstatus", nullable = false)
     private Short transcriptStatus;
 
-    @Column(name = "audiochannels")
-    private Short audioChannels;
-
-    @Column(name = "hastalkover")
-    private Boolean hasTalkover;
-
-    /* ---------- VpiCaptureView ---------- */
-
-
-
     // + remaining columns once, here only
 }
 

@@ -1720,8 +1720,6 @@ public class VpiRecordingService {
         map.put("transcriptResult", rec.getTranscriptResult());
         map.put("warehouseObjectKey", rec.getWarehouseObjectKey());
         map.put("transcriptStatus", rec.getTranscriptStatus());
-        map.put("audioChannels", rec.getAudioChannels());
-        map.put("hasTalkover", rec.getHasTalkover());
     }
 
     // ========== Entity Mapping Methods ==========
