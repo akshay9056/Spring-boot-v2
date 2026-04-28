@@ -730,6 +730,27 @@ public class VpiRecordingService {
                 : findMatchingXmlBlobs(prefix, fileDate, normalizedCustomer);
     }
 
+    // ========== FIXED: findXmlCandidates ==========
+// OLD: NYSEG/RGE tried to match timestamp+customer from blob name BEFORE parsing XML
+// NEW: For NYSEG/RGE, list ALL XML blobs under the prefix; let XML content + metadata match do the filtering
+
+    private List<String> findXmlCandidatese(String opco, String prefix,
+                                           String fileDate, String normalizedCustomer) {
+        if (CMP.equalsIgnoreCase(opco)) {
+            return findCmpXmlBlobs(prefix + "Metadata/");
+        } else {
+            // For NYSEG/RGE: list all XMLs under the day prefix, no filename pre-filtering
+            return findAllXmlBlobs(prefix);
+        }
+    }
+
+    private List<String> findAllXmlBlobs(String prefix) {
+        List<String> blobs = vpiAzureRepository.listBlobs(prefix);
+        return blobs.stream()
+                .filter(blob -> blob.toLowerCase(Locale.ROOT).endsWith(".xml"))
+                .toList();
+    }
+
     /**
      * Processes XML candidates and extracts matching media metadata.
      *
@@ -844,7 +865,6 @@ public class VpiRecordingService {
                                               String normalizedCustomer) {
         List<String> blobs = vpiAzureRepository.listBlobs(prefix);
         List<String> matchedXmls = new ArrayList<>();
-
         for (String blobName : blobs) {
             if (blobName.endsWith(".xml")
                     && matchesTimestamp(blobName, expectedDateTime)
@@ -1107,19 +1127,32 @@ public class VpiRecordingService {
     private Optional<String> extractCustomerName(String blobName) {
         try {
             String fileName = extractFileName(blobName);
-            int endIndex = fileName.indexOf(WAV_EXTENSION);
 
-            if (endIndex == -1 || fileName.length() < FILENAME_CUSTOMER_START) {
+            // Find end of customer name by stripping whatever extension is present
+            int endIndex;
+            String lower = fileName.toLowerCase(Locale.ROOT);
+            if (lower.endsWith(".xml")) {
+                endIndex = fileName.length() - 4;
+            } else if (lower.endsWith(".wav")) {
+                endIndex = fileName.length() - 4;
+            } else {
                 return Optional.empty();
             }
 
-            return Optional.of(
-                    fileName.substring(FILENAME_CUSTOMER_START, endIndex)
-            );
+            if (fileName.length() < FILENAME_CUSTOMER_START || endIndex < FILENAME_CUSTOMER_START) {
+                return Optional.empty();
+            }
+
+            return Optional.of(fileName.substring(FILENAME_CUSTOMER_START, endIndex));
+
         } catch (Exception ex) {
             logger.debug("Failed to extract customer name from blob: {}", blobName, ex);
             return Optional.empty();
         }
+    }
+
+    private String audioName(String blobName) {
+        return blobName.substring(blobName.lastIndexOf('/') + 1);
     }
 
     /**
@@ -1278,7 +1311,8 @@ public class VpiRecordingService {
      * @return ResponseEntity with appropriate headers and audio data
      */
     private ResponseEntity<ByteArrayResource> buildAudioResponse(byte[] mp3Data, String originalFilename) {
-        String mp3Filename = originalFilename + MP3_EXTENSION;
+        String mp3Filename = audioName(originalFilename);
+        mp3Filename = mp3Filename.substring(0, mp3Filename.lastIndexOf('.'))+ MP3_EXTENSION;
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.parseMediaType("audio/mpeg"));
@@ -1409,7 +1443,7 @@ public class VpiRecordingService {
      * @throws IOException if I/O error occurs
      */
     private void addBlobToZip(String blobName, ZipOutputStream zos) throws IOException {
-        zos.putNextEntry(new ZipEntry(blobName));
+        zos.putNextEntry(new ZipEntry(audioName(blobName)));
         try (InputStream blobStream = vpiAzureRepository.getBlobStream(blobName)) {
             StreamUtils.copy(blobStream, zos);
         } finally {
