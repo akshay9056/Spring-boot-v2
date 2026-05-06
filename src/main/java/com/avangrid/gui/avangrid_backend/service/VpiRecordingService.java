@@ -94,6 +94,7 @@ public class VpiRecordingService {
     private static final String CMP = "CMP";
     private static final String NYSEG = "NYSEG";
     private static final String RGE = "RGE";
+    private static final String METADATA = "Metadata/";
     private static final int DEFAULT_PAGE_SIZE = 20;
     private static final int MIN_PAGE_NUMBER = 1;
     private static final String STATUS_SUCCESS = "200";
@@ -705,9 +706,9 @@ public class VpiRecordingService {
         List<String> xmlCandidates = findXmlCandidates(req.getOpco(), prefix, fileDate, normalizedCustomer);
 
         if (xmlCandidates.isEmpty()) {
-           RecordingSearchResult audioFile = new RecordingSearchResult();
+            RecordingSearchResult audioFile = new RecordingSearchResult();
             audioFile.setBlobName(CMP.equalsIgnoreCase(req.getOpco())
-                    ? findMatchingWavBlobs(prefix + "Metadata/", fileDate,  normalizedCustomer)
+                    ? findMatchingWavBlobs(prefix + METADATA, fileDate,  normalizedCustomer)
                     : findMatchingWavBlobs( prefix, fileDate, normalizedCustomer));
             return audioFile;
         }
@@ -730,30 +731,10 @@ public class VpiRecordingService {
     private List<String> findXmlCandidates(String opco, String prefix,
                                            String fileDate, String normalizedCustomer) {
         return CMP.equalsIgnoreCase(opco)
-                ? findCmpXmlBlobs(prefix + "Metadata/")
+                ? findCmpXmlBlobs(prefix + METADATA)
                 : findMatchingXmlBlobs(prefix, fileDate, normalizedCustomer);
     }
 
-    // ========== FIXED: findXmlCandidates ==========
-// OLD: NYSEG/RGE tried to match timestamp+customer from blob name BEFORE parsing XML
-// NEW: For NYSEG/RGE, list ALL XML blobs under the prefix; let XML content + metadata match do the filtering
-
-    private List<String> findXmlCandidatese(String opco, String prefix,
-                                           String fileDate, String normalizedCustomer) {
-        if (CMP.equalsIgnoreCase(opco)) {
-            return findCmpXmlBlobs(prefix + "Metadata/");
-        } else {
-            // For NYSEG/RGE: list all XMLs under the day prefix, no filename pre-filtering
-            return findAllXmlBlobs(prefix);
-        }
-    }
-
-    private List<String> findAllXmlBlobs(String prefix) {
-        List<String> blobs = vpiAzureRepository.listBlobs(prefix);
-        return blobs.stream()
-                .filter(blob -> blob.toLowerCase(Locale.ROOT).endsWith(".xml"))
-                .toList();
-    }
 
     /**
      * Processes XML candidates and extracts matching media metadata.
@@ -870,7 +851,7 @@ public class VpiRecordingService {
         List<String> blobs = vpiAzureRepository.listBlobs(prefix);
         List<String> matchedXmls = new ArrayList<>();
         for (String blobName : blobs) {
-            if (blobName.endsWith(".xml")
+            if ((blobName.endsWith(".xml") || blobName.endsWith(".file"))
                     && matchesTimestamp(blobName, expectedDateTime)
                     && matchesCustomer(blobName, normalizedCustomer)) {
                 matchedXmls.add(blobName);
@@ -892,6 +873,8 @@ public class VpiRecordingService {
         }
         throw new RecordingNotFoundException("No Recordings found");
     }
+
+
 
     /**
      * Filters media metadata for CMP recordings matching timestamp and customer.
@@ -1016,7 +999,10 @@ public class VpiRecordingService {
             return false;
         }
 
-        return matchesStringField(fields, "objectID", req.getObjectId());
+        if (!matchesStringField(fields, "objectID", req.getObjectId())){
+            return false;
+        };
+        return true;
     }
 
     /**
@@ -1033,6 +1019,9 @@ public class VpiRecordingService {
             return true;
         }
         String actualValue = fields.get(fieldName);
+        if (actualValue == null) {
+            return true;
+        }
         return expectedValue.equals(actualValue);
     }
 
@@ -1044,6 +1033,9 @@ public class VpiRecordingService {
             return true;
         }
         String actualValue = fields.get(fieldName);
+        if (actualValue == null) {
+            return true;
+        }
         try {
             return expectedValue.equals(Integer.valueOf(actualValue.trim()));
         } catch (NumberFormatException ex) {
