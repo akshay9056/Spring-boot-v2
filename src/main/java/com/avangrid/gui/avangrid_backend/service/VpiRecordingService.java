@@ -705,7 +705,11 @@ public class VpiRecordingService {
         List<String> xmlCandidates = findXmlCandidates(req.getOpco(), prefix, fileDate, normalizedCustomer);
 
         if (xmlCandidates.isEmpty()) {
-            throw new RecordingNotFoundException("No XML recordings found");
+           RecordingSearchResult audioFile = new RecordingSearchResult();
+            audioFile.setBlobName(CMP.equalsIgnoreCase(req.getOpco())
+                    ? findMatchingWavBlobs(prefix + "Metadata/", fileDate,  normalizedCustomer)
+                    : findMatchingWavBlobs( prefix, fileDate, normalizedCustomer));
+            return audioFile;
         }
 
         List<MediaMetadata> matchedMedia = processXmlCandidates(
@@ -873,6 +877,20 @@ public class VpiRecordingService {
             }
         }
         return matchedXmls;
+    }
+
+    private String findMatchingWavBlobs(String prefix,
+                                              String expectedDateTime,
+                                              String normalizedCustomer) {
+        List<String> blobs = vpiAzureRepository.listBlobs(prefix);
+        for (String blobName : blobs) {
+            if (blobName.endsWith(WAV_EXTENSION)
+                    && matchesTimestamp(blobName, expectedDateTime)
+                    && matchesCustomer(blobName, normalizedCustomer)) {
+                return blobName;
+            }
+        }
+        throw new RecordingNotFoundException("No Recordings found");
     }
 
     /**
