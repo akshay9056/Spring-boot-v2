@@ -63,17 +63,17 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Service for managing VPI (Voice Portal Interface) recordings.
+ * Service for managing VRS (VPI Recording Service) recordings.
  *
- * <p>This service provides comprehensive functionality for:
+ * <p>This service provides comprehensive functionality for the VRS portal, including:
  * <ul>
- *   <li>Recording retrieval and search across multiple operating companies (OPCO)</li>
+ *   <li>Recording retrieval and search across all three operating companies (OPCOs)</li>
  *   <li>Audio format conversion from WAV to MP3 using FFmpeg</li>
  *   <li>Bulk download operations with ZIP packaging</li>
- *   <li>Metadata extraction and management</li>
+ *   <li>Metadata extraction and management from Azure Blob Storage and the database</li>
  * </ul>
  *
- * <p>Supported OPCOs: RGE, CMP, NYSEG
+ * <p>Supported OPCOs: RGE (Rochester Gas and Electric), CMP (Central Maine Power), NYSEG (New York State Electric and Gas)
  *
  * @author Avangrid Backend Team
  * @version 1.0
@@ -130,16 +130,18 @@ public class VpiRecordingService {
     private final XmlMediaParser xmlParser;
 
     /**
-     * Constructs a new VpiRecordingService with the required dependencies.
+     * Constructs a new VpiRecordingService with all required dependencies.
+     * OPCO-specific repositories (CMP, NYSEG, RGE) are optional and may be disabled
+     * via Spring configuration when that datasource is not available.
      *
-     * @param vpiAzureRepository Azure blob storage repository for recording files
-     * @param cmpRepo CMP database repository (optional)
-     * @param nysegRepo NYSEG database repository (optional)
-     * @param rgeRepo RGE database repository (optional)
-     * @param cmpUserRepo CMP user repository (optional)
-     * @param nysegUserRepo NYSEG user repository (optional)
-     * @param rgeUserRepo RGE user repository (optional)
-     * @param xmlParser XML metadata parser
+     * @param vpiAzureRepository Azure Blob Storage repository used to stream and download VRS recording files
+     * @param cmpRepo            CMP OPCO database repository (optional — may be null if CMP datasource is disabled)
+     * @param nysegRepo          NYSEG OPCO database repository (optional — may be null if NYSEG datasource is disabled)
+     * @param rgeRepo            RGE OPCO database repository (optional — may be null if RGE datasource is disabled)
+     * @param cmpUserRepo        CMP user repository for agent name lookups (optional)
+     * @param nysegUserRepo      NYSEG user repository for agent name lookups (optional)
+     * @param rgeUserRepo        RGE user repository for agent name lookups (optional)
+     * @param xmlParser          XML metadata parser used to extract {@link MediaMetadata} from VRS XML blob files
      */
     public VpiRecordingService(
             AzureBlobRepository vpiAzureRepository,
@@ -163,21 +165,21 @@ public class VpiRecordingService {
     // ========== Public API Methods ==========
 
     /**
-     * Retrieves paginated table data based on search criteria.
+     * Retrieves paginated VRS recording table data based on the provided search criteria.
      *
      * <p>This method supports:
      * <ul>
-     *   <li>Date range filtering</li>
-     *   <li>OPCO-specific searches</li>
-     *   <li>Custom filters (tags, channels, etc.)</li>
-     *   <li>User name filtering</li>
-     *   <li>Pagination with configurable page size</li>
+     *   <li>Date range filtering (EST input is converted to UTC for database queries)</li>
+     *   <li>OPCO-specific searches across CMP, RGE, and NYSEG</li>
+     *   <li>Custom filters such as tags, channel numbers, and extension numbers</li>
+     *   <li>Agent/user name filtering with partial-match support</li>
+     *   <li>Pagination with configurable page size and page number</li>
      * </ul>
      *
-     * @param request Search request containing date range, OPCO, filters, and pagination
-     * @return VpiSearchResponse with paginated results and metadata
-     * @throws InvalidRequestException if date range or parameters are invalid
-     * @throws IllegalArgumentException if end date is before start date
+     * @param request Search request containing date range, OPCO, optional filters, and pagination settings
+     * @return {@link VpiSearchResponse} containing paginated recording results and pagination metadata
+     * @throws InvalidRequestException  if any required field (fromDate, toDate, OPCO) is missing or invalid
+     * @throws IllegalArgumentException if the end date is before the start date
      */
     public VpiSearchResponse getTableData(VpiSearchRequest request) {
         logger.debug("Fetching table data for request: {}", request);
@@ -198,22 +200,22 @@ public class VpiRecordingService {
     }
 
     /**
-     * Retrieves comprehensive metadata for a specific recording.
+     * Retrieves the full metadata record for a specific VRS recording identified by its object ID and OPCO.
      *
      * <p>Returns all available metadata fields including:
      * <ul>
-     *   <li>Timing information (start time, duration, GMT offset)</li>
-     *   <li>Channel and agent details</li>
-     *   <li>Call identifiers (call ID, global call ID)</li>
-     *   <li>Media file information</li>
-     *   <li>Transcription status</li>
+     *   <li>Timing information: start time, duration, GMT offset</li>
+     *   <li>Channel and agent details: channel name, extension number, agent ID</li>
+     *   <li>Call identifiers: call ID, previous call ID, global call ID</li>
+     *   <li>Media file information: media file ID, media manager ID, media retention</li>
+     *   <li>Transcription status and warehouse object key</li>
      * </ul>
      *
-     * @param id Unique identifier (UUID) of the recording
-     * @param opco Operating company code (RGE, CMP, or NYSEG)
-     * @return Map containing all metadata fields with their values
-     * @throws InvalidRequestException if OPCO is invalid or null
-     * @throws RecordingNotFoundException if recording with given ID is not found
+     * @param id   Unique object ID (UUID) of the VRS recording record
+     * @param opco Operating company code — must be one of: RGE, CMP, NYSEG
+     * @return {@link Map} containing all metadata field names and their corresponding values
+     * @throws InvalidRequestException      if the OPCO value is null, blank, or not one of the allowed values
+     * @throws RecordingNotFoundException   if no recording record exists for the given ID and OPCO
      */
     public Map<String, Object> getMetadata(UUID id, String opco) {
         logger.debug("Fetching metadata for ....");
@@ -231,22 +233,22 @@ public class VpiRecordingService {
     }
 
     /**
-     * Retrieves a VPI recording and converts it to MP3 format.
+     * Retrieves a single VRS recording from Azure Blob Storage and streams it back as an MP3 audio response.
      *
      * <p>Process flow:
      * <ol>
-     *   <li>Validates the request parameters</li>
-     *   <li>Searches for the recording in Azure blob storage</li>
-     *   <li>Downloads the WAV file</li>
-     *   <li>Converts to MP3 using FFmpeg</li>
-     *   <li>Returns as a streamable response</li>
+     *   <li>Validates all fields in the {@link RecordingRequest}</li>
+     *   <li>Searches Azure Blob Storage for a matching WAV file using the OPCO, date, and username</li>
+     *   <li>Downloads the raw WAV blob content</li>
+     *   <li>Converts the WAV data to MP3 format via FFmpeg</li>
+     *   <li>Returns the MP3 as a streamable HTTP response with appropriate audio headers</li>
      * </ol>
      *
-     * @param request Recording request with filename, OPCO, date, and optional filters
-     * @return ResponseEntity containing MP3 audio data with appropriate headers
-     * @throws InvalidRequestException if request parameters are invalid
-     * @throws RecordingNotFoundException if recording is not found in storage
-     * @throws RecordingProcessingException if download or conversion fails
+     * @param request {@link RecordingRequest} containing the username, OPCO, date, and optional metadata filters
+     * @return {@link ResponseEntity} containing the MP3 audio bytes with Content-Type {@code audio/mpeg}
+     * @throws InvalidRequestException       if the request is null or any required field is missing/invalid
+     * @throws RecordingNotFoundException    if no matching recording blob is found in Azure storage
+     * @throws RecordingProcessingException  if the blob download or WAV-to-MP3 conversion fails
      */
     public ResponseEntity<ByteArrayResource> getRecordingVpi(RecordingRequest request) {
         logger.info("Retrieving recording for: {}", request.getUsername());
@@ -254,33 +256,32 @@ public class VpiRecordingService {
         validateRequest(request);
         RecordingSearchResult blobStatus = findRecordingVPI(request);
         String blobFile = blobStatus.getBlobName();
-        byte[] wavData = downloadBlob(blobFile);
+        byte[] wavData = downloadBlob(resolveAudioBlobName(blobFile));
         byte[] mp3Data = convertWavToMp3(wavData);
 
         return buildAudioResponse(mp3Data, blobFile);
     }
 
     /**
-     * Downloads multiple VPI recordings as a ZIP archive.
+     * Bulk-downloads multiple VRS recordings from Azure Blob Storage and packages them into a ZIP archive.
      *
      * <p>Features:
      * <ul>
-     *   <li>Batch processing of multiple recordings</li>
-     *   <li>Individual error handling per recording</li>
-     *   <li>Status summary JSON file included in ZIP</li>
-     *   <li>Continues processing even if some recordings fail</li>
+     *   <li>Processes each recording request independently so a single failure does not abort the batch</li>
+     *   <li>Includes a {@code status.json} summary inside the ZIP describing the outcome of every request</li>
+     *   <li>Returns HTTP 204 No Content if every recording in the batch fails to resolve</li>
      * </ul>
      *
-     * <p>The ZIP contains:
+     * <p>The returned ZIP contains:
      * <ul>
-     *   <li>Successfully retrieved MP3 files</li>
-     *   <li>status.json with detailed processing results</li>
+     *   <li>WAV files for every successfully retrieved recording</li>
+     *   <li>{@code status.json} with per-recording statuses: SUCCESS, NOT_FOUND, or ERROR</li>
      * </ul>
      *
-     * @param requests List of recording requests to download
-     * @return ResponseEntity containing ZIP file with all available recordings and status
-     * @throws InvalidRequestException if request list is empty
-     * @throws RecordingProcessingException if ZIP creation fails
+     * @param requests Non-empty list of {@link RecordingRequest} objects to download
+     * @return {@link ResponseEntity} containing the ZIP archive bytes, or 204 No Content if nothing was found
+     * @throws InvalidRequestException       if the request list is null or empty
+     * @throws RecordingProcessingException  if an unrecoverable error occurs during ZIP stream creation
      */
     public ResponseEntity<byte[]> downloadVpi(List<RecordingRequest> requests) {
         if (requests == null || requests.isEmpty()) {
@@ -316,24 +317,26 @@ public class VpiRecordingService {
     }
 
     /**
-     * Searches for recordings based on comprehensive criteria.
+     * Searches for VRS recordings across the appropriate OPCO repository using the supplied criteria.
      *
      * <p>Search capabilities:
      * <ul>
-     *   <li>Date/time range filtering</li>
-     *   <li>OPCO-specific searches</li>
-     *   <li>Username matching (partial matches supported)</li>
-     *   <li>Channel, extension, and tag filtering</li>
-     *   <li>Duration and call direction filters</li>
+     *   <li>Date/time range filtering (UTC-normalised)</li>
+     *   <li>OPCO-specific database queries (CMP, RGE, or NYSEG)</li>
+     *   <li>Agent/user name matching — names are cleaned and resolved to user IDs before querying</li>
+     *   <li>Additional field filters: channel, extension, tags, duration, and call direction</li>
      * </ul>
      *
-     * @param from Start date/time (inclusive)
-     * @param to End date/time (inclusive)
-     * @param opco Operating company code
-     * @param filters Additional search filters (nullable)
-     * @param pageable Pagination information
-     * @return Page of VpiMetadata results matching the criteria
-     * @throws InvalidRequestException if OPCO is invalid
+     * <p>If a name filter is supplied but no matching users are found, an empty page is returned immediately
+     * without hitting the capture table.
+     *
+     * @param from     Inclusive start date/time in UTC
+     * @param to       Inclusive end date/time in UTC
+     * @param opco     Operating company code — must be one of: RGE, CMP, NYSEG
+     * @param filters  Optional {@link VpiFiltersRequest} containing additional field-level filters; may be null
+     * @param pageable Spring {@link Pageable} carrying page number, page size, and sort order
+     * @return {@link Page} of {@link VpiMetadata} records that match all supplied criteria
+     * @throws InvalidRequestException if the OPCO is invalid or its datasource is disabled
      */
     public Page<VpiMetadata> search(
             OffsetDateTime from,
@@ -362,24 +365,24 @@ public class VpiRecordingService {
     }
 
     /**
-     * Converts WAV audio data to MP3 format using FFmpeg.
+     * Converts raw WAV audio bytes to MP3 format by piping data through an FFmpeg child process.
      *
      * <p>Conversion specifications:
      * <ul>
      *   <li>Codec: libmp3lame</li>
      *   <li>Bitrate: 128 kbps</li>
-     *   <li>Sample rate: 44100 Hz</li>
+     *   <li>Sample rate: 44 100 Hz</li>
      *   <li>Channels: 2 (stereo)</li>
-     *   <li>Timeout: 120 seconds</li>
+     *   <li>Process timeout: {@value #CONVERSION_TIMEOUT_SECONDS} seconds</li>
      * </ul>
      *
-     * <p>This method uses asynchronous I/O for efficient processing and includes
-     * comprehensive error handling for conversion failures.
+     * <p>stdin, stdout, and stderr are handled asynchronously via {@link CompletableFuture} to prevent
+     * pipe-buffer deadlocks. The FFmpeg process is forcibly destroyed in all exit paths via the finally block.
      *
-     * @param wavData Raw WAV audio bytes
-     * @return MP3 encoded audio bytes
-     * @throws InvalidRequestException if WAV data is null or empty
-     * @throws RecordingProcessingException if FFmpeg fails or times out
+     * @param wavData Raw WAV audio bytes to convert
+     * @return MP3-encoded audio bytes
+     * @throws InvalidRequestException       if {@code wavData} is null or empty
+     * @throws RecordingProcessingException  if FFmpeg exits with a non-zero code, times out, or the JVM is interrupted
      */
     public byte[] convertWavToMp3(byte[] wavData) {
         if (wavData == null || wavData.length == 0) {
@@ -427,10 +430,11 @@ public class VpiRecordingService {
     // ========== Validation Methods ==========
 
     /**
-     * Validates a search request for completeness and correctness.
+     * Validates that a {@link VpiSearchRequest} contains all required fields with acceptable values.
+     * Checks that fromDate, toDate, and OPCO are present and that the OPCO is one of the allowed values.
      *
-     * @param request The search request to validate
-     * @throws InvalidRequestException if any required field is missing or invalid
+     * @param request The VRS search request to validate
+     * @throws InvalidRequestException if the request is null or any required field is missing or invalid
      */
     private void validateSearchRequest(VpiSearchRequest request) {
         if (request == null) {
@@ -443,10 +447,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Validates a recording request for completeness.
+     * Validates that a {@link RecordingRequest} contains all fields required to locate a VRS recording blob.
+     * Checks that OPCO and date are both present and that the OPCO is one of the allowed values.
      *
-     * @param req The recording request to validate
-     * @throws InvalidRequestException if any required field is missing
+     * @param req The recording retrieval request to validate
+     * @throws InvalidRequestException if the request is null or any required field is missing
      */
     private void validateRequest(RecordingRequest req) {
         if (req == null) {
@@ -458,10 +463,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Validates an OPCO code against allowed values and checks repository availability.
+     * Validates an OPCO code and confirms its backing repository is available.
+     * The OPCO must be non-blank, match one of the allowed values (RGE, CMP, NYSEG),
+     * and its Spring datasource must not be disabled.
      *
      * @param opco The OPCO code to validate
-     * @throws InvalidRequestException if OPCO is invalid or its datasource is disabled
+     * @throws InvalidRequestException if the OPCO is blank, unknown, or its datasource bean is null
      */
     private void validateOpco(String opco) {
         assertRepoEnabled(opco);
@@ -475,11 +482,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Validates that a required field has a value.
+     * Asserts that a string field contains a non-blank value, throwing a descriptive
+     * {@link InvalidRequestException} when the field is absent.
      *
-     * @param value The field value to check
-     * @param fieldName The name of the field (for error messages)
-     * @throws InvalidRequestException if the field is null or empty
+     * @param value     The field value to check
+     * @param fieldName Human-readable field label used in the exception message
+     * @throws InvalidRequestException if {@code value} is null or contains only whitespace
      */
     private void validateRequiredField(String value, String fieldName) {
         if (!StringUtils.hasText(value)) {
@@ -488,10 +496,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Asserts that the repository for the given OPCO is enabled.
+     * Checks that the repository for the given OPCO has been wired by Spring.
+     * OPCO repositories are optional beans and may be null when a datasource is disabled
+     * via application configuration.
      *
-     * @param opco The OPCO code to check
-     * @throws InvalidRequestException if the datasource for this OPCO is disabled
+     * @param opco The OPCO code whose repository availability should be checked
+     * @throws InvalidRequestException if the corresponding repository bean is null (datasource disabled)
      */
     private void assertRepoEnabled(String opco) {
         String upperOpco = opco.toUpperCase();
@@ -510,11 +520,11 @@ public class VpiRecordingService {
     // ========== Date/Time Utility Methods ==========
 
     /**
-     * Parses a date-time string in the standard format (yyyy-MM-dd HH:mm:ss).
+     * Parses a date-time string using the VRS standard format {@code yyyy-MM-dd HH:mm:ss}.
      *
-     * @param dateStr The date string to parse
-     * @return LocalDateTime object
-     * @throws InvalidRequestException if the format is invalid
+     * @param dateStr The date-time string to parse
+     * @return Parsed {@link LocalDateTime}
+     * @throws InvalidRequestException if the string does not conform to the expected format
      */
     private LocalDateTime parseDateTime(String dateStr) {
         try {
@@ -525,6 +535,14 @@ public class VpiRecordingService {
         }
     }
 
+    /**
+     * Converts a {@link LocalDateTime} expressed in the America/New_York time zone (EST/EDT)
+     * to a UTC {@link OffsetDateTime} for use in database queries.
+     * Daylight saving transitions are handled automatically by the zone rules.
+     *
+     * @param date Local date-time assumed to be in the America/New_York zone
+     * @return Equivalent date-time at UTC offset
+     */
     public OffsetDateTime convertEstToUtc(LocalDateTime date) {
 
         ZonedDateTime estZoned = date.atZone(ZoneId.of("America/New_York"));
@@ -535,11 +553,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Parses a date-time string in XML format (M/d/yyyy h:mm:ss a).
+     * Parses a date-time string using the VRS XML metadata format {@code M/d/yyyy h:mm:ss a}.
+     * This format is used in the XML blob files stored in Azure for each OPCO.
      *
-     * @param dateStr The XML date string to parse
-     * @return LocalDateTime object
-     * @throws InvalidRequestException if the format is invalid
+     * @param dateStr The XML-format date-time string to parse (e.g., {@code "1/15/2024 3:45:30 PM"})
+     * @return Parsed {@link LocalDateTime}
+     * @throws InvalidRequestException if the string does not conform to the XML format
      */
     private LocalDateTime parseDateTimeXML(String dateStr) {
         try {
@@ -551,10 +570,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Converts an OffsetDateTime to XML start time format.
+     * Formats an {@link OffsetDateTime} to the VRS XML start-time string representation
+     * ({@code M/d/yyyy h:mm:ss a}, UTC, no sub-second precision).
+     * Used when constructing the {@link VpiMetadata} DTO fields {@code startTime} and {@code dateAdded}.
      *
-     * @param dateTime The datetime to convert
-     * @return Formatted string in XML format, or null if input is null
+     * @param dateTime The date-time to format; may be at any UTC offset (will be normalised to UTC)
+     * @return Formatted XML start-time string, or {@code null} if the input is {@code null}
      */
     public static String toXmlStartTime(OffsetDateTime dateTime) {
         if (dateTime == null) {
@@ -568,13 +589,16 @@ public class VpiRecordingService {
     }
 
     /**
-     * Converts XML start time format to file timestamp format.
+     * Converts a VRS XML start-time string to the file-timestamp format used in Azure blob file names.
      *
-     * <p>Example: "1/15/2024 3:45:30 PM" → "2024-01-15_03-45-30"
+     * <p>Example: {@code "1/15/2024 3:45:30 PM"} → {@code "2024-01-15_03-45-30"}
      *
-     * @param xmlStartTime The XML start time string
-     * @return File timestamp string
-     * @throws IllegalArgumentException if input is null, empty, or invalid format
+     * <p>The resulting timestamp is matched against the datetime portion of VRS blob file names
+     * (characters 5–24 of the file name) when searching Azure Blob Storage for a recording.
+     *
+     * @param xmlStartTime VRS XML start-time string in {@code M/d/yyyy h:mm:ss a} format
+     * @return File-timestamp string in {@code yyyy-MM-dd_HH-mm-ss} format
+     * @throws IllegalArgumentException if {@code xmlStartTime} is null, blank, or cannot be parsed
      */
     public String xmlStartTimeToFileTimestamp(String xmlStartTime) {
         if (xmlStartTime == null || xmlStartTime.isBlank()) {
@@ -603,10 +627,12 @@ public class VpiRecordingService {
     // ========== Pagination Utility Methods ==========
 
     /**
-     * Creates a Pageable object from pagination request.
+     * Builds a Spring {@link Pageable} from the optional {@link PaginationRequest}.
+     * Falls back to safe defaults (page 1, size 20, sorted by {@code dateAdded} descending) when
+     * the pagination object is null or contains invalid values.
      *
-     * @param pagination The pagination request (nullable)
-     * @return Pageable with safe defaults if request is null
+     * @param pagination Optional pagination parameters from the API request; may be null
+     * @return {@link Pageable} ready for use in repository queries
      */
     private Pageable createPageable(PaginationRequest pagination) {
         int pageNumber = pagination != null ? pagination.getPageNumber() : MIN_PAGE_NUMBER;
@@ -619,10 +645,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Builds a search response from a page result.
+     * Assembles a {@link VpiSearchResponse} from a {@link Page} of {@link VpiMetadata} results.
+     * Populates both the data list and the pagination metadata (page number, size, totals).
      *
-     * @param pageResult The page of results
-     * @return Formatted VpiSearchResponse
+     * @param pageResult Spring {@link Page} returned by the repository search
+     * @return Fully populated {@link VpiSearchResponse} ready to serialize to the client
      */
     private VpiSearchResponse buildSearchResponse(Page<VpiMetadata> pageResult) {
         VpiSearchResponse response = new VpiSearchResponse();
@@ -644,10 +671,11 @@ public class VpiRecordingService {
     // ========== String Utility Methods ==========
 
     /**
-     * Cleans a list of names by removing nulls, trimming, and filtering empty strings.
+     * Sanitises a raw list of name strings by removing null entries, trimming surrounding whitespace,
+     * and discarding any entries that are empty after trimming.
      *
-     * @param names The list of names to clean (nullable)
-     * @return Cleaned list of names
+     * @param names Raw list of name strings from the filter request; may be null
+     * @return Immutable list of non-null, non-empty, trimmed name strings; empty list if input is null
      */
     private List<String> cleanNames(List<String> names) {
         if (names == null) {
@@ -662,20 +690,59 @@ public class VpiRecordingService {
     }
 
     /**
-     * Normalizes a string to lowercase for case-insensitive comparison.
+     * Normalises a string to lowercase for case-insensitive blob name comparisons.
+     * If the value contains a dot, everything from the dot onwards is stripped so that
+     * location suffixes such as {@code ". Radio"} or {@code ". Monroe"} do not affect matching.
      *
-     * @param value The value to normalize
-     * @return Normalized lowercase string, or empty string if null
+     * <p>Example: {@code "East Ave UHF 1 Main Ofc. Radio"} → {@code "east ave uhf 1 main ofc"}
+     *
+     * @param value The raw string to normalise; may be null
+     * @return Normalised lowercase string (dot-suffix stripped), or an empty string if the input is null
      */
     private String normalize(String value) {
-        return value == null ? "" : value.toLowerCase(Locale.ROOT);
+        if (value == null) return "";
+        String lower = value.toLowerCase(Locale.ROOT);
+        // If dot present, strip from dot onwards for matching purposes
+        // "east ave uhf 1 main ofc. radio" → "east ave uhf 1 main ofc"
+        int dotIndex = lower.indexOf('.');
+        return dotIndex != -1 ? lower.substring(0, dotIndex).trim() : lower;
     }
 
     /**
-     * Checks if a string is null or empty after trimming.
+     * Resolves the correct Azure blob name for the audio file associated with a VRS recording.
      *
-     * @param value The string to check
-     * @return true if null or empty, false otherwise
+     * <p>VRS blob file names for some CMP recordings contain a dot inside the customer-name segment
+     * (e.g., {@code "...East Ave UHF 4 W. Monroe Radio.wav"}). In those cases the standard
+     * {@code .wav} extension must be stripped before the name can be used as a lookup key,
+     * because the blob is stored without the trailing {@code .wav}.
+     * For all other recordings with a single dot (the extension only) the name is returned as-is.
+     *
+     * @param blobName Full Azure blob path including the file name
+     * @return Resolved blob name: either the original path or the path with the {@code .wav} extension removed
+     */
+    private String resolveAudioBlobName(String blobName) {
+        String fileName = extractFileName(blobName);
+        String customerPart = fileName.length() > FILENAME_CUSTOMER_START
+                ? fileName.substring(FILENAME_CUSTOMER_START)
+                : "";
+
+        long dotCount = customerPart.chars().filter(c -> c == '.').count();
+
+        if (dotCount > 1) {
+            // "...East Ave UHF 4 W. Monroe Radio.wav" → strip .wav → "...East Ave UHF 4 W. Monroe Radio"
+            return blobName.substring(0, blobName.length() - 4);
+        }
+
+        // Normal case — one dot (.wav only) — return as-is
+        return blobName;
+    }
+
+    /**
+     * Returns {@code true} when the supplied string is null or blank after trimming.
+     * Used as a guard before performing field-level comparisons in metadata matching.
+     *
+     * @param value The string to test
+     * @return {@code true} if null or blank, {@code false} otherwise
      */
     private boolean isNullOrEmpty(String value) {
         return value == null || value.trim().isEmpty();
@@ -684,19 +751,23 @@ public class VpiRecordingService {
     // ========== Recording Search Methods ==========
 
     /**
-     * Finds a VPI recording in Azure blob storage matching the request criteria.
+     * Locates a VRS recording blob in Azure Blob Storage that matches the supplied {@link RecordingRequest}.
      *
      * <p>Search strategy:
      * <ol>
-     *   <li>Build day-based prefix for blob search</li>
-     *   <li>Find XML metadata files matching timestamp and customer</li>
-     *   <li>Parse XML files and filter by metadata fields</li>
-     *   <li>Return the first successful match</li>
+     *   <li>Derives a day-level blob prefix from the OPCO and recording date</li>
+     *   <li>Converts the XML start-time to the file-timestamp format used in blob names</li>
+     *   <li>Lists blobs under the prefix and filters by timestamp and customer name</li>
+     *   <li>For XML-based OPCOs (NYSEG, RGE) — parses the XML metadata and applies additional
+     *       field-level filters (ANI/ALI digits, duration, extension, channel, object ID)</li>
+     *   <li>For CMP — searches the {@code Metadata/} sub-folder for XML blobs and also falls back
+     *       to a direct WAV blob search when no XML candidates exist</li>
+     *   <li>Returns a {@link RecordingSearchResult} pointing to the first matched blob</li>
      * </ol>
      *
-     * @param req The recording request with search criteria
-     * @return RecordingSearchResult containing blob name and match status
-     * @throws RecordingNotFoundException if no matching recording is found
+     * @param req {@link RecordingRequest} containing OPCO, date, username, and optional metadata filters
+     * @return {@link RecordingSearchResult} containing the matched blob path and a multiple-match flag
+     * @throws RecordingNotFoundException if no blob matches the request criteria
      */
     private RecordingSearchResult findRecordingVPI(RecordingRequest req) {
         String fileDate = xmlStartTimeToFileTimestamp(req.getDate());
@@ -720,13 +791,16 @@ public class VpiRecordingService {
     }
 
     /**
-     * Finds XML blob candidates based on OPCO type.
+     * Selects the correct XML blob discovery strategy based on the OPCO.
+     * CMP recordings store their XML metadata files under a dedicated {@code Metadata/} sub-folder,
+     * while NYSEG and RGE XML blobs are located directly under the day-level prefix and must also
+     * match the expected timestamp and customer name before being returned.
      *
-     * @param opco Operating company code
-     * @param prefix Blob prefix path
-     * @param fileDate File timestamp
-     * @param normalizedCustomer Normalized customer name
-     * @return List of XML blob names
+     * @param opco               Operating company code (CMP, NYSEG, or RGE)
+     * @param prefix             Day-level Azure Blob Storage prefix (e.g., {@code "CMP/2024/1/15/"})
+     * @param fileDate           File-timestamp string used to filter NYSEG/RGE blob names
+     * @param normalizedCustomer Normalised customer/location name used to filter NYSEG/RGE blob names
+     * @return List of XML blob paths that are candidates for further metadata parsing
      */
     private List<String> findXmlCandidates(String opco, String prefix,
                                            String fileDate, String normalizedCustomer) {
@@ -737,14 +811,18 @@ public class VpiRecordingService {
 
 
     /**
-     * Processes XML candidates and extracts matching media metadata.
+     * Parses each XML candidate blob, applies timestamp and customer-name filtering for CMP
+     * (where a single XML file may contain multiple {@link MediaMetadata} records), and then
+     * applies field-level metadata filters from the original request.
+     * Only records whose {@code result} field equals {@code "SUCCESS"} are retained.
      *
-     * @param xmlCandidates List of XML blob names to process
-     * @param fileDate Expected file timestamp
-     * @param normalizedCustomer Normalized customer name
-     * @param req Recording request with filter criteria
-     * @return List of matched MediaMetadata
-     * @throws RecordingNotFoundException if no matches found
+     * @param xmlCandidates      List of XML blob paths to parse
+     * @param fileDate           Expected file-timestamp string for secondary filtering
+     * @param normalizedCustomer Normalised customer name for secondary filtering
+     * @param req                Original {@link RecordingRequest} supplying optional field-level filters
+     * @return Non-empty list of {@link MediaMetadata} records that matched all criteria
+     * @throws RecordingNotFoundException if parsing yields no match, with a context-specific message
+     *                                    distinguishing between a metadata mismatch and a missing audio file
      */
     private List<MediaMetadata> processXmlCandidates(List<String> xmlCandidates,
                                                      String fileDate,
@@ -776,6 +854,17 @@ public class VpiRecordingService {
         return matchedMedia;
     }
 
+    /**
+     * Parses a single XML blob and returns the relevant {@link MediaMetadata} records.
+     * When the XML contains more than one record (CMP multi-record XMLs), the list is
+     * narrowed down to those whose file name matches the expected timestamp and customer name.
+     * For single-record XMLs (NYSEG, RGE) the parsed result is returned as-is.
+     *
+     * @param xmlBlob            Azure blob path of the XML file to parse
+     * @param fileDate           File-timestamp string used for CMP multi-record filtering
+     * @param normalizedCustomer Normalised customer name used for CMP multi-record filtering
+     * @return Filtered list of {@link MediaMetadata} extracted from the XML blob
+     */
     private List<MediaMetadata> getFilteredMedia(String xmlBlob,
                                                  String fileDate,
                                                  String normalizedCustomer) {
@@ -790,11 +879,18 @@ public class VpiRecordingService {
     }
 
     /**
-     * Validates that matched media is not empty and throws appropriate exception.
+     * Validates that the matched-media list is non-empty and throws a meaningful
+     * {@link RecordingNotFoundException} when it is empty.
+     * The {@code metadataFoundButNoMatch} flag distinguishes between two failure modes:
+     * <ul>
+     *   <li>{@code true} — metadata was found and passed field filters but the audio result was not SUCCESS
+     *       (i.e., the recording was not migrated to Azure Blob Storage)</li>
+     *   <li>{@code false} — the XML was found but no record matched the timestamp/customer/field filters</li>
+     * </ul>
      *
-     * @param matchedMedia List of matched media
-     * @param metadataFoundButNoMatch Flag indicating if metadata was found but didn't match
-     * @throws RecordingNotFoundException if no matches found with appropriate message
+     * @param matchedMedia             List of successfully matched {@link MediaMetadata} records
+     * @param metadataFoundButNoMatch  {@code true} if metadata matched but audio result was not SUCCESS
+     * @throws RecordingNotFoundException if {@code matchedMedia} is empty
      */
     private void validateMatchedMedia(List<MediaMetadata> matchedMedia,
                                       boolean metadataFoundButNoMatch) {
@@ -807,11 +903,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Builds the final recording search result from matched media.
+     * Constructs a {@link RecordingSearchResult} from the first entry in the matched-media list.
+     * If more than one record matched, a warning is logged and the first match is used.
      *
-     * @param matchedMedia List of matched media metadata
-     * @param prefix Blob prefix path
-     * @return RecordingSearchResult with blob name and multiple match flag
+     * @param matchedMedia Non-empty list of matched {@link MediaMetadata} records
+     * @param prefix       Day-level Azure Blob Storage prefix used to build the full blob path
+     * @return {@link RecordingSearchResult} with the resolved blob path and multiple-match flag set accordingly
      */
     private RecordingSearchResult buildRecordingResult(List<MediaMetadata> matchedMedia, String prefix) {
         RecordingSearchResult result = new RecordingSearchResult();
@@ -824,11 +921,14 @@ public class VpiRecordingService {
 
         return result;
     }
+
     /**
-     * Finds XML blob files for CMP OPCO.
+     * Lists all XML blobs under the CMP {@code Metadata/} sub-folder prefix.
+     * CMP stores one or more recording metadata records inside XML files within a dedicated
+     * metadata directory rather than alongside the audio files.
      *
-     * @param dayPrefix The day prefix path
-     * @return List of XML blob names
+     * @param dayPrefix Full Azure Blob Storage prefix including the {@code Metadata/} segment
+     * @return List of blob paths whose names end with {@code .xml}
      */
     private List<String> findCmpXmlBlobs(String dayPrefix) {
         List<String> blobs = vpiAzureRepository.listBlobs(dayPrefix);
@@ -838,12 +938,14 @@ public class VpiRecordingService {
     }
 
     /**
-     * Finds XML blobs matching timestamp and customer name.
+     * Lists XML blobs under the given prefix and filters them by both timestamp and customer name.
+     * Used for NYSEG and RGE OPCOs where XML blobs are co-located with audio files and named
+     * using the same {@code <prefix><timestamp><customer>.xml} convention.
      *
-     * @param prefix The blob prefix
-     * @param expectedDateTime The expected timestamp
-     * @param normalizedCustomer The normalized customer name
-     * @return List of matching XML blob names
+     * @param prefix             Day-level Azure Blob Storage prefix
+     * @param expectedDateTime   File-timestamp string that the blob name must contain
+     * @param normalizedCustomer Normalised customer/location name that the blob name must contain
+     * @return List of XML blob paths that satisfy both the timestamp and customer-name constraints
      */
     private List<String> findMatchingXmlBlobs(String prefix,
                                               String expectedDateTime,
@@ -851,7 +953,7 @@ public class VpiRecordingService {
         List<String> blobs = vpiAzureRepository.listBlobs(prefix);
         List<String> matchedXmls = new ArrayList<>();
         for (String blobName : blobs) {
-            if ((blobName.endsWith(".xml") || blobName.endsWith(".file"))
+            if (blobName.endsWith(".xml")
                     && matchesTimestamp(blobName, expectedDateTime)
                     && matchesCustomer(blobName, normalizedCustomer)) {
                 matchedXmls.add(blobName);
@@ -860,9 +962,21 @@ public class VpiRecordingService {
         return matchedXmls;
     }
 
+    /**
+     * Scans WAV blobs under the given prefix and returns the first one that matches
+     * both the expected timestamp and the normalised customer name.
+     * This is the fallback path used when no XML metadata blob could be located for a recording
+     * (e.g., CMP recordings where the XML is absent from the Metadata folder).
+     *
+     * @param prefix             Azure Blob Storage prefix to list blobs under
+     * @param expectedDateTime   File-timestamp string that the blob name must contain
+     * @param normalizedCustomer Normalised customer/location name that the blob name must contain
+     * @return Full blob path of the first matching WAV file
+     * @throws RecordingNotFoundException if no WAV blob under the prefix satisfies the constraints
+     */
     private String findMatchingWavBlobs(String prefix,
-                                              String expectedDateTime,
-                                              String normalizedCustomer) {
+                                        String expectedDateTime,
+                                        String normalizedCustomer) {
         List<String> blobs = vpiAzureRepository.listBlobs(prefix);
         for (String blobName : blobs) {
             if (blobName.endsWith(WAV_EXTENSION)
@@ -877,12 +991,15 @@ public class VpiRecordingService {
 
 
     /**
-     * Filters media metadata for CMP recordings matching timestamp and customer.
+     * Filters a list of CMP {@link MediaMetadata} records down to those whose {@code fileName}
+     * matches both the expected file-timestamp and the normalised customer name.
+     * CMP XML files can contain multiple recording entries, so this method selects
+     * only the entries that correspond to the specific recording being requested.
      *
-     * @param metadataList The list of media metadata to filter
-     * @param expectedDateTime The expected timestamp
-     * @param normalizedCustomer The normalized customer name
-     * @return Filtered list of valid metadata
+     * @param metadataList       Full list of {@link MediaMetadata} parsed from a CMP XML blob; may be null or empty
+     * @param expectedDateTime   File-timestamp string that each record's file name must contain
+     * @param normalizedCustomer Normalised customer/location name that each record's file name must contain
+     * @return Filtered list of valid {@link MediaMetadata} records; empty list if input is null or empty
      */
     public List<MediaMetadata> findMatchingMediaCMP(List<MediaMetadata> metadataList,
                                                     String expectedDateTime,
@@ -907,12 +1024,13 @@ public class VpiRecordingService {
     }
 
     /**
-     * Validates a filename against expected timestamp and customer name.
+     * Validates a single {@link MediaMetadata} file name against the expected timestamp and customer name.
+     * Logs a debug message when either condition fails to assist with troubleshooting blob mismatches.
      *
-     * @param fileName The filename to validate
-     * @param expectedDateTime The expected timestamp
-     * @param normalizedCustomer The normalized customer name
-     * @return true if valid, false otherwise
+     * @param fileName           The file name from a {@link MediaMetadata} record to validate
+     * @param expectedDateTime   File-timestamp string the name must contain
+     * @param normalizedCustomer Normalised customer name the name must contain
+     * @return {@code true} if the file name satisfies both constraints; {@code false} otherwise
      */
     private boolean isValidFilename(String fileName, String expectedDateTime, String normalizedCustomer) {
         if (isNullOrEmpty(fileName)) {
@@ -932,11 +1050,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Parses XML blob content to extract media metadata.
+     * Downloads an XML blob from Azure Blob Storage and parses it into a list of {@link MediaMetadata} records.
+     * The blob content is read entirely into memory before parsing.
      *
-     * @param blobName The blob name containing XML
-     * @return List of media metadata extracted from XML
-     * @throws RecordingProcessingException if XML parsing fails
+     * @param blobName Full Azure blob path of the XML file to parse
+     * @return List of {@link MediaMetadata} records extracted from the XML; may be empty
+     * @throws RecordingProcessingException if the blob cannot be downloaded or the XML stream cannot be closed
      */
     private List<MediaMetadata> parseXml(String blobName) {
         try {
@@ -950,10 +1069,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Processes XML stream to extract media metadata.
+     * Delegates XML parsing to {@link XmlMediaParser} and logs summary statistics about the result.
+     * Warns when the parsed list contains records that fail the {@link MediaMetadata#isValid()} check,
+     * which indicates incomplete or malformed entries in the VRS XML metadata file.
      *
-     * @param xmlStream The XML input stream
-     * @return List of extracted media metadata
+     * @param xmlStream {@link InputStream} of the VRS XML blob content
+     * @return List of {@link MediaMetadata} records extracted from the stream
      */
     public List<MediaMetadata> processMediaXml(InputStream xmlStream) {
         logger.debug("Starting XML media metadata extraction");
@@ -974,6 +1095,26 @@ public class VpiRecordingService {
     }
 
     // ========== Metadata Matching Methods ==========
+
+    /**
+     * Checks whether a {@link MediaMetadata} record satisfies all optional field-level filters
+     * specified in the {@link RecordingRequest}.
+     * Null or empty filter values are treated as wildcards and always match.
+     * Returns {@code false} immediately on the first failing check (short-circuit evaluation).
+     *
+     * <p>Evaluated fields (all optional):
+     * <ul>
+     *   <li>{@code aniAliDigits} — ANI/ALI digit string</li>
+     *   <li>{@code duration} — call duration in seconds</li>
+     *   <li>{@code extensionNum} — agent extension number</li>
+     *   <li>{@code channelNum} — recording channel number</li>
+     *   <li>{@code objectID} — VRS object identifier</li>
+     * </ul>
+     *
+     * @param metadata The {@link MediaMetadata} record to evaluate
+     * @param req      The original {@link RecordingRequest} carrying the filter values
+     * @return {@code true} if all non-null filter fields match the metadata; {@code false} otherwise
+     */
     private boolean matchesMetadata(MediaMetadata metadata,
                                     RecordingRequest req) {
 
@@ -1006,13 +1147,14 @@ public class VpiRecordingService {
     }
 
     /**
-     * Checks if a string field matches the expected value.
-     * Null or empty expected values are treated as wildcards (always match).
+     * Evaluates whether a string field in the metadata map matches the expected value.
+     * When the expected value is null or blank it is treated as a wildcard and {@code true} is returned.
+     * When the actual value is absent from the map, {@code true} is also returned (permissive matching).
      *
-     * @param fields The fields map
-     * @param fieldName The field name to check
-     * @param expectedValue The expected value (nullable)
-     * @return true if matches or is wildcard, false otherwise
+     * @param fields        Metadata fields map from a {@link MediaMetadata} record
+     * @param fieldName     Key of the field to look up in the map
+     * @param expectedValue The value to match against; null or blank acts as a wildcard
+     * @return {@code true} if the actual value equals the expected value, or if either is absent/wildcard
      */
     private boolean matchesStringField(Map<String, String> fields, String fieldName, String expectedValue) {
         if (isNullOrEmpty(expectedValue)) {
@@ -1025,7 +1167,17 @@ public class VpiRecordingService {
         return expectedValue.equals(actualValue);
     }
 
-
+    /**
+     * Evaluates whether an integer field in the metadata map matches the expected value.
+     * When the expected value is null it is treated as a wildcard and {@code true} is returned.
+     * When the actual value is absent from the map or cannot be parsed as an integer,
+     * {@code true} is returned (permissive matching — a parse failure is logged at DEBUG level).
+     *
+     * @param fields        Metadata fields map from a {@link MediaMetadata} record
+     * @param fieldName     Key of the field to look up in the map
+     * @param expectedValue The integer value to match against; null acts as a wildcard
+     * @return {@code true} if the parsed actual value equals the expected value, or if either is absent/wildcard
+     */
     private boolean matchesIntegerField(Map<String, String> fields,
                                         String fieldName,
                                         Integer expectedValue) {
@@ -1045,11 +1197,13 @@ public class VpiRecordingService {
     }
 
     /**
-     * Checks if a blob name's timestamp matches the expected value.
+     * Checks whether the datetime portion of a blob file name matches the expected file-timestamp string.
+     * The datetime is extracted from characters {@value #FILENAME_DATETIME_START}–{@value #FILENAME_DATETIME_END}
+     * of the file name.
      *
-     * @param blobName The blob name
-     * @param expected The expected timestamp string
-     * @return true if matches, false otherwise
+     * @param blobName Full Azure blob path containing the file name to inspect
+     * @param expected File-timestamp string to compare against (e.g., {@code "2024-01-15_03-45-30"})
+     * @return {@code true} if the extracted datetime equals {@code expected}; {@code false} if extraction fails
      */
     private boolean matchesTimestamp(String blobName, String expected) {
         return extractDateTime(blobName)
@@ -1058,11 +1212,14 @@ public class VpiRecordingService {
     }
 
     /**
-     * Checks if a blob name's customer name matches the expected value.
+     * Checks whether the customer/location segment of a blob file name matches the expected normalised name.
+     * The customer name is extracted from character {@value #FILENAME_CUSTOMER_START} to the start of
+     * the file extension. Both values are normalised (lowercased, dot-suffix stripped) before comparison.
      *
-     * @param blobName The blob name
-     * @param normalizedCustomer The normalized expected customer name
-     * @return true if matches, false otherwise
+     * @param blobName           Full Azure blob path containing the file name to inspect
+     * @param normalizedCustomer Normalised customer/location name to compare against
+     * @return {@code true} if the normalised extracted name equals {@code normalizedCustomer};
+     *         {@code false} if extraction fails or names differ
      */
     private boolean matchesCustomer(String blobName, String normalizedCustomer) {
         return extractCustomerName(blobName)
@@ -1074,11 +1231,12 @@ public class VpiRecordingService {
     // ========== Blob Path Methods ==========
 
     /**
-     * Builds a day-based prefix for blob storage paths.
+     * Builds the day-level Azure Blob Storage prefix for a given OPCO and date.
+     * The prefix follows the VRS container path convention: {@code <OPCO>/<year>/<month>/<day>/}.
      *
-     * @param opco The OPCO code
-     * @param date The date
-     * @return Formatted prefix string (e.g., "RGE/2024/1/15/")
+     * @param opco The OPCO code (RGE, CMP, or NYSEG) — converted to uppercase
+     * @param date The recording date whose year, month, and day components form the path segments
+     * @return Formatted prefix string (e.g., {@code "RGE/2024/1/15/"})
      */
     private String buildDayPrefix(String opco, LocalDate date) {
         return String.format("%s/%d/%d/%d/",
@@ -1089,11 +1247,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Downloads blob content from Azure storage.
+     * Downloads the full content of an Azure blob into a byte array.
+     * Wraps any underlying exception in a {@link RecordingProcessingException} with a descriptive message.
      *
-     * @param blobName The blob name to download
-     * @return Byte array of blob content
-     * @throws RecordingProcessingException if download fails
+     * @param blobName Full Azure blob path to download
+     * @return Byte array containing the blob content
+     * @throws RecordingProcessingException if the download fails for any reason
      */
     private byte[] downloadBlob(String blobName) {
         try {
@@ -1106,10 +1265,12 @@ public class VpiRecordingService {
     // ========== Filename Parsing Methods ==========
 
     /**
-     * Extracts date-time portion from a blob filename.
+     * Extracts the datetime segment from a VRS blob file name.
+     * VRS file names follow the convention {@code XXXXX<datetime><customer>.<ext>} where
+     * the datetime occupies characters {@value #FILENAME_DATETIME_START} to {@value #FILENAME_DATETIME_END}.
      *
-     * @param blobName The blob name
-     * @return Optional containing extracted datetime string
+     * @param blobName Full Azure blob path
+     * @return {@link Optional} containing the datetime substring, or empty if extraction fails
      */
     private Optional<String> extractDateTime(String blobName) {
         try {
@@ -1129,10 +1290,13 @@ public class VpiRecordingService {
     }
 
     /**
-     * Extracts customer name from a blob filename.
+     * Extracts the customer/location name segment from a VRS blob file name.
+     * The customer name occupies characters from {@value #FILENAME_CUSTOMER_START} to the
+     * beginning of the file extension ({@code .xml} or {@code .wav}).
      *
-     * @param blobName The blob name
-     * @return Optional containing extracted customer name
+     * @param blobName Full Azure blob path
+     * @return {@link Optional} containing the raw customer-name substring,
+     *         or empty if extraction fails or the file name is too short
      */
     private Optional<String> extractCustomerName(String blobName) {
         try {
@@ -1161,15 +1325,24 @@ public class VpiRecordingService {
         }
     }
 
+    /**
+     * Extracts only the file name portion from a full Azure blob path by trimming everything
+     * up to and including the last {@code /} separator.
+     * Used as the basis for all subsequent file-name parsing operations.
+     *
+     * @param blobName Full Azure blob path (e.g., {@code "RGE/2024/1/15/XXXXX2024-01-15_03-45-30Customer.wav"})
+     * @return File name only (e.g., {@code "XXXXX2024-01-15_03-45-30Customer.wav"})
+     */
     private String audioName(String blobName) {
         return blobName.substring(blobName.lastIndexOf('/') + 1);
     }
 
     /**
-     * Extracts the filename portion from a full blob path.
+     * Extracts the file name from a full Azure blob path.
+     * Equivalent to {@link #audioName(String)} and used internally by timestamp and customer extraction helpers.
      *
-     * @param blobName The full blob path
-     * @return The filename only
+     * @param blobName Full Azure blob path
+     * @return File name portion after the last {@code /} character
      */
     private String extractFileName(String blobName) {
         return blobName.substring(blobName.lastIndexOf('/') + 1);
@@ -1178,9 +1351,11 @@ public class VpiRecordingService {
     // ========== FFmpeg Conversion Helper Methods ==========
 
     /**
-     * Builds the FFmpeg command array for WAV to MP3 conversion.
+     * Builds the FFmpeg command-line argument array for WAV-to-MP3 conversion.
+     * Reads from {@code pipe:0} (stdin) and writes to {@code pipe:1} (stdout) to avoid
+     * temporary file creation. Suppresses the FFmpeg banner and limits log output to warnings.
      *
-     * @return String array containing FFmpeg command and arguments
+     * @return String array containing the FFmpeg executable path and all conversion arguments
      */
     private String[] buildFfmpegCommand() {
         return new String[]{
@@ -1199,10 +1374,13 @@ public class VpiRecordingService {
     }
 
     /**
-     * Starts the FFmpeg process with secure environment settings.
+     * Creates and starts the FFmpeg {@link Process} for WAV-to-MP3 conversion.
+     * When using the absolute path {@code /usr/bin/ffmpeg} (production environment),
+     * the child process environment is sanitised to only expose {@code /usr/bin:/bin}
+     * to reduce the attack surface.
      *
-     * @return Started Process instance
-     * @throws IOException if process creation fails
+     * @return Started {@link Process} instance ready for stdin/stdout piping
+     * @throws IOException if the operating system cannot create the child process
      */
     private Process startFfmpegProcess() throws IOException {
         ProcessBuilder pb = new ProcessBuilder(buildFfmpegCommand());
@@ -1217,10 +1395,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Asynchronously reads the error stream from FFmpeg process.
+     * Asynchronously drains the FFmpeg process stderr stream into a single string.
+     * Must be consumed concurrently with stdin writing and stdout reading to prevent
+     * the stderr pipe buffer from blocking the process.
      *
-     * @param process The FFmpeg process
-     * @return CompletableFuture containing error output
+     * @param process The running FFmpeg {@link Process}
+     * @return {@link CompletableFuture} that resolves to the full stderr output (may be empty)
      */
     private CompletableFuture<String> readErrorStream(Process process) {
         return CompletableFuture.supplyAsync(() -> {
@@ -1236,11 +1416,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Asynchronously writes WAV data to FFmpeg's stdin.
+     * Asynchronously writes the WAV byte array to the FFmpeg process stdin and flushes the stream.
+     * The stream is closed after writing so that FFmpeg receives an EOF signal and begins producing output.
      *
-     * @param process The FFmpeg process
-     * @param wavData The WAV data to write
-     * @return CompletableFuture that completes when writing is done
+     * @param process The running FFmpeg {@link Process}
+     * @param wavData Raw WAV audio bytes to pipe into FFmpeg
+     * @return {@link CompletableFuture} that completes when all bytes have been written and the stream is closed
      */
     private CompletableFuture<Void> writeInputData(Process process, byte[] wavData) {
         return CompletableFuture.runAsync(() -> {
@@ -1254,10 +1435,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Asynchronously reads MP3 data from FFmpeg's stdout.
+     * Asynchronously reads the FFmpeg process stdout into a byte array containing the converted MP3 data.
+     * Reads in {@value #BUFFER_SIZE}-byte chunks until EOF is signalled by FFmpeg after completing conversion.
      *
-     * @param process The FFmpeg process
-     * @return CompletableFuture containing MP3 data
+     * @param process The running FFmpeg {@link Process}
+     * @return {@link CompletableFuture} that resolves to the full MP3 byte array once stdout is exhausted
      */
     private CompletableFuture<byte[]> readOutputData(Process process) {
         return CompletableFuture.supplyAsync(() -> {
@@ -1278,13 +1460,16 @@ public class VpiRecordingService {
     }
 
     /**
-     * Validates the FFmpeg conversion result.
+     * Checks the FFmpeg process exit code and logs any warnings emitted to stderr.
+     * A non-zero exit code indicates that the conversion failed and triggers a
+     * {@link RecordingProcessingException} containing the exit code and stderr output.
+     * On success, logs the input WAV size and output MP3 size for auditing.
      *
-     * @param exitCode FFmpeg process exit code
-     * @param errors Error messages from FFmpeg
-     * @param inputSize Size of input WAV data
-     * @param outputSize Size of output MP3 data
-     * @throws RecordingProcessingException if conversion failed
+     * @param exitCode   FFmpeg process exit code (0 = success)
+     * @param errors     Captured FFmpeg stderr output; logged as a warning when non-empty on success
+     * @param inputSize  Size of the input WAV data in bytes (logged on success)
+     * @param outputSize Size of the output MP3 data in bytes (logged on success)
+     * @throws RecordingProcessingException if {@code exitCode} is non-zero
      */
     private void validateConversionResult(int exitCode, String errors, int inputSize, int outputSize) {
         if (exitCode != 0) {
@@ -1300,9 +1485,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Forcibly destroys a process if it's still alive.
+     * Forcibly terminates the FFmpeg child process if it is still running.
+     * Called in all exit paths (success, error, and timeout) via the finally block
+     * in {@link #convertWavToMp3(byte[])} to prevent zombie processes.
      *
-     * @param process The process to destroy (nullable)
+     * @param process The {@link Process} to destroy; no-op if null or already terminated
      */
     private void destroyProcess(Process process) {
         if (process != null && process.isAlive()) {
@@ -1314,11 +1501,14 @@ public class VpiRecordingService {
     // ========== Response Building Methods ==========
 
     /**
-     * Builds an HTTP response for audio data.
+     * Builds an HTTP {@link ResponseEntity} for streaming a single VRS recording as MP3 audio.
+     * Sets Content-Type to {@code audio/mpeg}, Content-Disposition to {@code inline}, and
+     * Content-Length to allow the browser or client to display a progress indicator.
+     * The output file name is derived from the original blob name with the extension changed to {@code .mp3}.
      *
-     * @param mp3Data The MP3 audio bytes
-     * @param originalFilename The original filename
-     * @return ResponseEntity with appropriate headers and audio data
+     * @param mp3Data          MP3 audio bytes to include in the response body
+     * @param originalFilename Original blob file name (used to derive the MP3 download name)
+     * @return HTTP 200 OK {@link ResponseEntity} with the MP3 bytes and audio headers
      */
     private ResponseEntity<ByteArrayResource> buildAudioResponse(byte[] mp3Data, String originalFilename) {
         String mp3Filename = audioName(originalFilename);
@@ -1337,10 +1527,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Builds an HTTP response for ZIP file data.
+     * Builds an HTTP {@link ResponseEntity} for downloading a ZIP archive of VRS recordings.
+     * Sets Content-Type to {@code application/octet-stream} and Content-Disposition to
+     * {@code attachment; filename="recordings.zip"} so the browser prompts a file save dialog.
      *
-     * @param zipData The ZIP file bytes
-     * @return ResponseEntity with appropriate headers and ZIP data
+     * @param zipData Byte array containing the fully assembled ZIP archive
+     * @return HTTP 200 OK {@link ResponseEntity} with the ZIP bytes and download headers
      */
     private ResponseEntity<byte[]> buildZipResponse(byte[] zipData) {
         HttpHeaders headers = new HttpHeaders();
@@ -1354,20 +1546,29 @@ public class VpiRecordingService {
     // ========== ZIP Creation Methods ==========
 
     /**
-     * Adds a single recording to a ZIP output stream.
+     * Processes a single {@link RecordingRequest} and writes the matching VRS audio blob as a ZIP entry.
+     * Handles each failure mode independently so the bulk download can continue when individual
+     * recordings are missing or encounter errors.
      *
-     * @param req The recording request
-     * @param zos The ZIP output stream
-     * @return RecordingStatus indicating success or failure
+     * <p>Outcome codes:
+     * <ul>
+     *   <li>{@code SUCCESS} — blob found and written to the ZIP stream</li>
+     *   <li>{@code NOT_FOUND} — no matching blob in Azure storage</li>
+     *   <li>{@code ERROR} — unexpected I/O or processing failure</li>
+     * </ul>
+     *
+     * @param req The individual VRS recording request to process
+     * @param zos The open {@link ZipOutputStream} to write the audio entry into
+     * @return {@link RecordingStatus} describing the outcome for this request
      */
     private RecordingStatus addRecordingToZip(RecordingRequest req, ZipOutputStream zos) {
         validateRequest(req);
         String blobName = null;
 
         try {
-            blobName = findRecordingVPI(req).getBlobName();
+            blobName = resolveAudioBlobName(findRecordingVPI(req).getBlobName());
 
-            if (blobName == null || blobName.isEmpty()) {
+            if (blobName.isEmpty()) {
                 logger.warn("No matching blob found for user={} date={}", req.getUsername(), req.getDate());
                 return createNotFoundStatus(req);
             }
@@ -1395,10 +1596,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Creates a recording status for not found scenarios.
+     * Creates a {@link RecordingStatus} representing a not-found outcome for a VRS recording request.
+     * Used when no matching audio blob could be located in Azure Blob Storage.
      *
-     * @param req The recording request
-     * @return RecordingStatus with NOT_FOUND status
+     * @param req The recording request that could not be fulfilled
+     * @return {@link RecordingStatus} with status {@code NOT_FOUND} and a descriptive message
      */
     private RecordingStatus createNotFoundStatus(RecordingRequest req) {
         return new RecordingStatus(
@@ -1411,11 +1613,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Creates a recording status for successful operations.
+     * Creates a {@link RecordingStatus} representing a successful ZIP entry addition for a VRS recording.
      *
-     * @param req The recording request
-     * @param zipEntryName The ZIP entry name
-     * @return RecordingStatus with SUCCESS status
+     * @param req          The recording request that was fulfilled
+     * @param zipEntryName The blob path used as the ZIP entry name
+     * @return {@link RecordingStatus} with status {@code SUCCESS} and no error message
      */
     private RecordingStatus createSuccessStatus(RecordingRequest req, String zipEntryName) {
         return new RecordingStatus(
@@ -1428,12 +1630,13 @@ public class VpiRecordingService {
     }
 
     /**
-     * Creates a recording status for error scenarios.
+     * Creates a {@link RecordingStatus} representing a processing error for a VRS recording request.
+     * Used when an unexpected exception occurs during blob retrieval or ZIP stream writing.
      *
-     * @param req The recording request
-     * @param zipEntryName The ZIP entry name
-     * @param errorMessage The error message
-     * @return RecordingStatus with ERROR status
+     * @param req          The recording request that encountered an error
+     * @param zipEntryName The blob path that was being processed when the error occurred (may be null)
+     * @param errorMessage Human-readable description of the error
+     * @return {@link RecordingStatus} with status {@code ERROR} and the supplied error message
      */
     private RecordingStatus createErrorStatus(RecordingRequest req, String zipEntryName, String errorMessage) {
         return new RecordingStatus(
@@ -1446,11 +1649,13 @@ public class VpiRecordingService {
     }
 
     /**
-     * Adds a blob to a ZIP output stream.
+     * Streams a single Azure blob into the ZIP output stream as a new entry.
+     * Opens the blob via a streaming API to avoid loading the entire file into memory.
+     * Ensures the ZIP entry is closed in the finally block even when an I/O error occurs mid-stream.
      *
-     * @param blobName The blob name to add
-     * @param zos The ZIP output stream
-     * @throws IOException if I/O error occurs
+     * @param blobName Full Azure blob path of the audio file to add
+     * @param zos      The open {@link ZipOutputStream} to write the entry into
+     * @throws IOException if reading the blob stream or writing to the ZIP stream fails
      */
     private void addBlobToZip(String blobName, ZipOutputStream zos) throws IOException {
         zos.putNextEntry(new ZipEntry(audioName(blobName)));
@@ -1464,15 +1669,18 @@ public class VpiRecordingService {
     // ========== Database Search Methods ==========
 
     /**
-     * Performs a search across the appropriate OPCO repository.
+     * Dispatches a VRS recording search to the repository of the requested OPCO.
+     * Delegates to the appropriate OPCO-specific search method (CMP, NYSEG, or RGE),
+     * each of which builds a JPA {@link Specification} and calls the corresponding repository.
      *
-     * @param from Start datetime
-     * @param to End datetime
-     * @param opco OPCO code
-     * @param filters Additional filters
-     * @param userIds Matched user IDs
-     * @param pageable Pagination settings
-     * @return Page of VpiMetadata results
+     * @param from     Inclusive start date/time in UTC
+     * @param to       Inclusive end date/time in UTC
+     * @param opco     OPCO code determining which repository is queried
+     * @param filters  Optional {@link VpiFiltersRequest} with additional field-level filters; may be null
+     * @param userIds  Set of user UUIDs pre-resolved from name filters; empty when no name filter is active
+     * @param pageable Spring {@link Pageable} carrying page number, size, and sort order
+     * @return {@link Page} of {@link VpiMetadata} records matching all criteria
+     * @throws InvalidRequestException if the OPCO is not one of the allowed values
      */
     private Page<VpiMetadata> performSearch(
             OffsetDateTime from,
@@ -1493,14 +1701,16 @@ public class VpiRecordingService {
     }
 
     /**
-     * Searches CMP repository.
+     * Executes a paginated VRS recording search against the CMP repository.
+     * Builds a JPA {@link Specification} via {@link CaptureSpecifications#build} and delegates
+     * to the CMP repository, then enriches results with agent names and maps to DTOs.
      *
-     * @param from Start datetime
-     * @param to End datetime
-     * @param filters Filters
-     * @param userIds User IDs
-     * @param pageable Pagination
-     * @return Page of results
+     * @param from     Inclusive start date/time in UTC
+     * @param to       Inclusive end date/time in UTC
+     * @param filters  Optional field-level filters; may be null
+     * @param userIds  Pre-resolved CMP user IDs from name filters; empty when no name filter is active
+     * @param pageable Pagination and sort settings
+     * @return Page of enriched {@link VpiMetadata} records for the CMP OPCO
      */
     private Page<VpiMetadata> searchCmp(
             OffsetDateTime from,
@@ -1515,14 +1725,16 @@ public class VpiRecordingService {
     }
 
     /**
-     * Searches NYSEG repository.
+     * Executes a paginated VRS recording search against the NYSEG repository.
+     * Builds a JPA {@link Specification} via {@link CaptureSpecifications#build} and delegates
+     * to the NYSEG repository, then enriches results with agent names and maps to DTOs.
      *
-     * @param from Start datetime
-     * @param to End datetime
-     * @param filters Filters
-     * @param userIds User IDs
-     * @param pageable Pagination
-     * @return Page of results
+     * @param from     Inclusive start date/time in UTC
+     * @param to       Inclusive end date/time in UTC
+     * @param filters  Optional field-level filters; may be null
+     * @param userIds  Pre-resolved NYSEG user IDs from name filters; empty when no name filter is active
+     * @param pageable Pagination and sort settings
+     * @return Page of enriched {@link VpiMetadata} records for the NYSEG OPCO
      */
     private Page<VpiMetadata> searchNyseg(
             OffsetDateTime from,
@@ -1537,14 +1749,16 @@ public class VpiRecordingService {
     }
 
     /**
-     * Searches RGE repository.
+     * Executes a paginated VRS recording search against the RGE repository.
+     * Builds a JPA {@link Specification} via {@link CaptureSpecifications#build} and delegates
+     * to the RGE repository, then enriches results with agent names and maps to DTOs.
      *
-     * @param from Start datetime
-     * @param to End datetime
-     * @param filters Filters
-     * @param userIds User IDs
-     * @param pageable Pagination
-     * @return Page of results
+     * @param from     Inclusive start date/time in UTC
+     * @param to       Inclusive end date/time in UTC
+     * @param filters  Optional field-level filters; may be null
+     * @param userIds  Pre-resolved RGE user IDs from name filters; empty when no name filter is active
+     * @param pageable Pagination and sort settings
+     * @return Page of enriched {@link VpiMetadata} records for the RGE OPCO
      */
     private Page<VpiMetadata> searchRge(
             OffsetDateTime from,
@@ -1561,11 +1775,12 @@ public class VpiRecordingService {
     // ========== User Management Methods ==========
 
     /**
-     * Fetches user IDs matching any of the provided names.
+     * Queries the OPCO-specific user repository for all user IDs whose full name contains
+     * any of the supplied name fragments. Results are used to filter VRS capture records by agent.
      *
-     * @param opco OPCO code
-     * @param names List of names to match
-     * @return Set of matched user UUIDs
+     * @param opco  OPCO code determining which user repository is queried
+     * @param names Non-empty list of cleaned name fragments to match against
+     * @return Set of user UUIDs whose full name matches at least one fragment; empty set if none found
      */
     private Set<UUID> fetchMatchedUserIds(String opco, List<String> names) {
         if (names == null || names.isEmpty()) {
@@ -1584,11 +1799,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Fetches usernames for a set of user IDs.
+     * Fetches the full names of all users identified by the supplied IDs from the OPCO-specific user repository.
+     * The resulting map is used to populate the {@code username} field on {@link VpiMetadata} DTOs.
      *
-     * @param opco OPCO code
-     * @param userIds Set of user UUIDs
-     * @return Map of user ID to full name
+     * @param opco    OPCO code determining which user repository is queried
+     * @param userIds Set of user UUIDs to look up; returns an empty map when the set is empty
+     * @return Map of user UUID to full name for all found users
      */
     private Map<UUID, String> fetchUserNames(String opco, Set<UUID> userIds) {
         if (userIds.isEmpty()) {
@@ -1615,13 +1831,14 @@ public class VpiRecordingService {
     }
 
     /**
-     * Builds a map of user IDs to names from a list of user entities.
+     * Converts a list of OPCO user entities into a {@link Map} keyed by user UUID.
+     * Generic helper used by {@link #fetchUserNames} for all three OPCOs to avoid duplication.
      *
-     * @param users List of user entities
-     * @param idExtractor Function to extract user ID
-     * @param nameExtractor Function to extract username
-     * @param <T> Type of user entity
-     * @return Map of UUID to name
+     * @param users         List of user entities of any OPCO type
+     * @param idExtractor   Function that extracts the UUID from a user entity
+     * @param nameExtractor Function that extracts the full name from a user entity
+     * @param <T>           The OPCO-specific user entity type (e.g., {@link VpiUsersCmp})
+     * @return Map of user UUID to full name; empty map if {@code users} is empty
      */
     private <T> Map<UUID, String> buildUserNameMap(
             List<T> users,
@@ -1634,11 +1851,13 @@ public class VpiRecordingService {
     // ========== Metadata Retrieval Methods ==========
 
     /**
-     * Retrieves metadata by OPCO and object ID.
+     * Retrieves the full VRS capture record(s) for the given object ID from the specified OPCO repository
+     * and converts each to a flat metadata map.
      *
-     * @param id Object ID
-     * @param opco OPCO code
-     * @return List of metadata maps
+     * @param id   UUID of the VRS recording object to look up
+     * @param opco OPCO code determining which repository is queried
+     * @return List of metadata maps (typically one entry); empty list if no record is found
+     * @throws InvalidRequestException if the OPCO is not one of the allowed values
      */
     private List<Map<String, Object>> getMetadataByOpco(UUID id, String opco) {
         String upperOpco = opco.toUpperCase();
@@ -1652,10 +1871,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Converts recording entities to metadata maps.
+     * Converts a list of {@link VpiCaptureView} entities to a list of flat metadata maps.
+     * Each map is built by {@link #buildMetadataMap} and contains all available VRS recording fields.
      *
-     * @param recordings List of recording entities
-     * @return List of metadata maps
+     * @param recordings List of VRS capture entities (any OPCO); may be empty
+     * @return Immutable list of metadata maps, one per recording entity
      */
     private List<Map<String, Object>> metadataFull(List<? extends VpiCaptureView> recordings) {
         return recordings.stream()
@@ -1664,10 +1884,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Builds a comprehensive metadata map from a recording entity.
+     * Assembles the complete flat metadata map for a single VRS recording entity.
+     * Delegates field grouping to dedicated helper methods to keep the method concise
+     * and to make it easy to add or remove field groups independently.
      *
-     * @param rec The recording entity
-     * @return Map containing all metadata fields
+     * @param rec The {@link VpiCaptureView} entity representing one VRS recording
+     * @return {@link LinkedHashMap} containing all metadata fields in insertion order
      */
     private Map<String, Object> buildMetadataMap(VpiCaptureView rec) {
         Map<String, Object> map = new LinkedHashMap<>();
@@ -1685,7 +1907,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Adds identifier fields to metadata map.
+     * Adds object and resource identifier fields to the metadata map.
+     * Includes: {@code objectId}, {@code dateAdded}, {@code resourceId}, {@code workstationId}, {@code userId}.
+     *
+     * @param map Map to populate
+     * @param rec Source VRS capture entity
      */
     private void addIdentifierFields(Map<String, Object> map, VpiCaptureView rec) {
         map.put("objectId", rec.getObjectId());
@@ -1696,7 +1922,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Adds timing fields to metadata map.
+     * Adds call timing fields to the metadata map.
+     * Includes: {@code startTime}, {@code gmtOffset}, {@code gmtStartTime}, {@code duration}.
+     *
+     * @param map Map to populate
+     * @param rec Source VRS capture entity
      */
     private void addTimingFields(Map<String, Object> map, VpiCaptureView rec) {
         map.put("startTime", rec.getStartTime());
@@ -1706,7 +1936,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Adds trigger and tag fields to metadata map.
+     * Adds trigger, flag, tag, and sensitivity fields to the metadata map.
+     * Includes: {@code triggeredByResourceTypeId}, {@code triggeredByObjectId},
+     * {@code flagId}, {@code tags}, {@code sensitivityLevel}, {@code clientId}.
+     *
+     * @param map Map to populate
+     * @param rec Source VRS capture entity
      */
     private void addTriggerAndTagFields(Map<String, Object> map, VpiCaptureView rec) {
         map.put("triggeredByResourceTypeId", rec.getTriggeredByResourceTypeId());
@@ -1718,7 +1953,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Adds channel and agent fields to metadata map.
+     * Adds channel, agent, and telephony fields to the metadata map.
+     * Includes: {@code channelNum}, {@code channelName}, {@code extensionNum}, {@code agentId},
+     * {@code pbxDnis}, {@code anialidigits}, {@code direction}.
+     *
+     * @param map Map to populate
+     * @param rec Source VRS capture entity
      */
     private void addChannelAndAgentFields(Map<String, Object> map, VpiCaptureView rec) {
         map.put("channelNum", rec.getChannelNum());
@@ -1731,7 +1971,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Adds media fields to metadata map.
+     * Adds media storage fields to the metadata map.
+     * Includes: {@code mediaFileId}, {@code mediaManagerId}, {@code mediaRetention}.
+     *
+     * @param map Map to populate
+     * @param rec Source VRS capture entity
      */
     private void addMediaFields(Map<String, Object> map, VpiCaptureView rec) {
         map.put("mediaFileId", rec.getMediaFileId());
@@ -1740,7 +1984,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Adds call ID fields to metadata map.
+     * Adds call identifier fields to the metadata map.
+     * Includes: {@code callId}, {@code previousCallId}, {@code globalCallId}.
+     *
+     * @param map Map to populate
+     * @param rec Source VRS capture entity
      */
     private void addCallIdFields(Map<String, Object> map, VpiCaptureView rec) {
         map.put("callId", rec.getCallId());
@@ -1749,7 +1997,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Adds service fields to metadata map.
+     * Adds service classification and platform reference fields to the metadata map.
+     * Includes: {@code classOfService}, {@code classOfServiceDate}, {@code xPlatformRef}.
+     *
+     * @param map Map to populate
+     * @param rec Source VRS capture entity
      */
     private void addServiceFields(Map<String, Object> map, VpiCaptureView rec) {
         map.put("classOfService", rec.getClassOfService());
@@ -1758,7 +2010,11 @@ public class VpiRecordingService {
     }
 
     /**
-     * Adds transcription fields to metadata map.
+     * Adds transcription status and warehouse reference fields to the metadata map.
+     * Includes: {@code transcriptResult}, {@code warehouseObjectKey}, {@code transcriptStatus}.
+     *
+     * @param map Map to populate
+     * @param rec Source VRS capture entity
      */
     private void addTranscriptionFields(Map<String, Object> map, VpiCaptureView rec) {
         map.put("transcriptResult", rec.getTranscriptResult());
@@ -1769,11 +2025,13 @@ public class VpiRecordingService {
     // ========== Entity Mapping Methods ==========
 
     /**
-     * Enriches a page of recordings with usernames and converts to DTOs.
+     * Enriches a page of OPCO capture entities with agent full names and converts each to a
+     * {@link VpiMetadata} DTO for the API response.
+     * If the page is empty, an empty page is returned immediately without any database calls.
      *
-     * @param page Page of recording entities
-     * @param opco OPCO code
-     * @return Page of VpiMetadata DTOs
+     * @param page Page of {@link VpiCaptureView} entities returned by the repository
+     * @param opco OPCO code used to query the correct user repository for name resolution
+     * @return Page of {@link VpiMetadata} DTOs with the {@code username} field populated where available
      */
     private Page<VpiMetadata> enrichAndMap(Page<? extends VpiCaptureView> page, String opco) {
         if (page.isEmpty()) {
@@ -1787,10 +2045,12 @@ public class VpiRecordingService {
     }
 
     /**
-     * Extracts unique user IDs from a page of recordings.
+     * Extracts the distinct set of user IDs from a page of VRS capture entities.
+     * Null user IDs are filtered out before collecting.
+     * The resulting set is used to batch-fetch agent names in a single repository call.
      *
-     * @param page Page of recordings
-     * @return Set of user UUIDs
+     * @param page Page of {@link VpiCaptureView} entities
+     * @return Set of non-null user UUIDs present in the page
      */
     private Set<UUID> extractUserIds(Page<? extends VpiCaptureView> page) {
         return page.getContent().stream()
@@ -1800,12 +2060,15 @@ public class VpiRecordingService {
     }
 
     /**
-     * Converts a recording entity to a VpiMetadata DTO.
+     * Maps a single {@link VpiCaptureView} entity to a {@link VpiMetadata} DTO.
+     * Date fields are formatted to XML start-time strings via {@link #toXmlStartTime}.
+     * The agent full name is resolved from the pre-fetched {@code userNameMap}; if no
+     * matching entry exists, the {@code username} field is left null.
      *
-     * @param rec The recording entity
-     * @param opco OPCO code
-     * @param userNameMap Map of user IDs to names
-     * @return VpiMetadata DTO
+     * @param rec         The VRS capture entity to convert
+     * @param opco        OPCO code set on the resulting DTO
+     * @param userNameMap Pre-fetched map of user UUID to full name
+     * @return Populated {@link VpiMetadata} DTO ready for serialisation
      */
     private VpiMetadata convertToMetadata(
             VpiCaptureView rec,
